@@ -1,6 +1,7 @@
 using System.Text;
 using ERP.Identity.Configuration;
 using ERP.Identity.Services;
+using ERP.Persistence.Context;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -37,6 +38,10 @@ public static class IdentityServiceExtensions
             ?? throw new InvalidOperationException("JwtSettings section is missing from configuration.");
 
         services.Configure<JwtSettings>(configuration.GetSection(JwtSettings.SectionName));
+
+        // Register Identity entity configurations with AppDbContext
+        // Without this, EF Core won't discover table mappings for Users, Roles, Permissions, etc.
+        AppDbContext.ConfigurationAssemblies.Add(typeof(IdentityServiceExtensions).Assembly);
 
         // Register token service
         services.AddSingleton<ITokenService, TokenService>();

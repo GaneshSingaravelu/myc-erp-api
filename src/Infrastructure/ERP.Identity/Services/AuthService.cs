@@ -1,9 +1,11 @@
+using ERP.Identity.Configuration;
 using ERP.Identity.DTOs;
 using ERP.Identity.Entities;
 using ERP.Persistence.Context;
 using ERP.SharedKernel.Results;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace ERP.Identity.Services;
 
@@ -36,12 +38,18 @@ public class AuthService : IAuthService
 {
     private readonly AppDbContext _context;
     private readonly ITokenService _tokenService;
+    private readonly JwtSettings _jwtSettings;
     private readonly ILogger<AuthService> _logger;
 
-    public AuthService(AppDbContext context, ITokenService tokenService, ILogger<AuthService> logger)
+    public AuthService(
+        AppDbContext context,
+        ITokenService tokenService,
+        IOptions<JwtSettings> jwtSettings,
+        ILogger<AuthService> logger)
     {
         _context = context;
         _tokenService = tokenService;
+        _jwtSettings = jwtSettings.Value;
         _logger = logger;
     }
 
@@ -88,7 +96,7 @@ public class AuthService : IAuthService
 
         // Step 5: Store refresh token
         user.RefreshToken = refreshToken;
-        user.RefreshTokenExpiresAt = DateTime.UtcNow.AddDays(7);
+        user.RefreshTokenExpiresAt = DateTime.UtcNow.AddDays(_jwtSettings.RefreshTokenExpirationDays);
         user.LastLoginAt = DateTime.UtcNow;
         await _context.SaveChangesAsync();
 
@@ -98,7 +106,7 @@ public class AuthService : IAuthService
         return Result.Success(new LoginResponse(
             AccessToken: accessToken,
             RefreshToken: refreshToken,
-            ExpiresAt: DateTime.UtcNow.AddMinutes(60),
+            ExpiresAt: DateTime.UtcNow.AddMinutes(_jwtSettings.AccessTokenExpirationMinutes),
             User: MapToDto(user, roles)));
     }
 
@@ -160,13 +168,13 @@ public class AuthService : IAuthService
         var newRefreshToken = _tokenService.GenerateRefreshToken();
 
         user.RefreshToken = newRefreshToken;
-        user.RefreshTokenExpiresAt = DateTime.UtcNow.AddDays(7);
+        user.RefreshTokenExpiresAt = DateTime.UtcNow.AddDays(_jwtSettings.RefreshTokenExpirationDays);
         await _context.SaveChangesAsync();
 
         return Result.Success(new LoginResponse(
             AccessToken: newAccessToken,
             RefreshToken: newRefreshToken,
-            ExpiresAt: DateTime.UtcNow.AddMinutes(60),
+            ExpiresAt: DateTime.UtcNow.AddMinutes(_jwtSettings.AccessTokenExpirationMinutes),
             User: MapToDto(user, roles)));
     }
 

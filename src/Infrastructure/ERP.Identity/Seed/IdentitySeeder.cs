@@ -1,6 +1,7 @@
 using ERP.Identity.Entities;
 using ERP.Persistence.Context;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -31,6 +32,11 @@ public static class IdentitySeeder
         using var scope = serviceProvider.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var logger = scope.ServiceProvider.GetRequiredService<ILogger<AppDbContext>>();
+        var configuration = scope.ServiceProvider.GetRequiredService<IConfiguration>();
+
+        // Read admin password from configuration instead of hardcoding
+        var adminPassword = configuration["SeedSettings:DefaultAdminPassword"]
+            ?? throw new InvalidOperationException("SeedSettings:DefaultAdminPassword is missing from configuration.");
 
         try
         {
@@ -105,7 +111,7 @@ public static class IdentitySeeder
                 Id = Guid.Parse("00000000-0000-0000-0000-000000000099"),
                 UserName = "admin",
                 Email = "admin@erp.local",
-                PasswordHash = BCrypt.Net.BCrypt.HashPassword("Admin@123"),
+                PasswordHash = BCrypt.Net.BCrypt.HashPassword(adminPassword),
                 FirstName = "System",
                 LastName = "Administrator",
                 IsActive = true
@@ -122,7 +128,7 @@ public static class IdentitySeeder
             });
 
             await context.SaveChangesAsync();
-            logger.LogInformation("Identity data seeded: {PermCount} permissions, 4 roles, 1 admin user (admin/Admin@123)",
+            logger.LogInformation("Identity data seeded: {PermCount} permissions, 4 roles, 1 admin user (username: admin). Change the default password immediately.",
                 permissions.Count);
         }
         catch (Exception ex)
