@@ -1,10 +1,12 @@
 using ERP.Api.Middleware;
 using ERP.Application.Abstractions.Behaviors;
 using ERP.Identity.Extensions;
+using ERP.Identity.Seed;
 using ERP.Infrastructure.Extensions;
 using ERP.Infrastructure.Tenant;
 using ERP.Notifications.Hubs;
 using ERP.Persistence.Extensions;
+using ERP.Workflow.Infrastructure.Extensions;
 using MediatR;
 using Serilog;
 
@@ -60,9 +62,9 @@ builder.Host.UseSerilog();
 // MediatR scans assemblies for command/query handlers and registers them
 builder.Services.AddMediatR(cfg =>
 {
-    // Register handlers from the Application.Abstractions assembly
-    // In the future, add module assemblies here too
+    // Register handlers from all assemblies
     cfg.RegisterServicesFromAssembly(typeof(ValidationBehavior<,>).Assembly);
+    cfg.RegisterServicesFromAssembly(typeof(ERP.Workflow.Application.Commands.CreateProcessTemplateCommand).Assembly);
 
     // Register pipeline behaviors (run BEFORE every handler)
     cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
@@ -77,6 +79,9 @@ builder.Services.AddInfrastructure(builder.Configuration);
 
 // --- Identity: JWT Authentication, Token Service ---
 builder.Services.AddIdentityServices(builder.Configuration);
+
+// --- Workflow Module: Process Templates ---
+builder.Services.AddWorkflowModule();
 
 // --- Notifications: SignalR ---
 builder.Services.AddSignalR();
@@ -195,10 +200,16 @@ app.MapHealthChecks("/health");
 // ============================================================================
 // STEP 5: START THE APPLICATION
 // ============================================================================
+// ============================================================================
+// STEP 6: SEED DEFAULT IDENTITY DATA (runs on first startup only)
+// ============================================================================
 Log.Information("Starting ERP API...");
 
 try
 {
+    // Seed default admin user, roles, and permissions
+    await IdentitySeeder.SeedAsync(app.Services);
+
     app.Run();
 }
 catch (Exception ex)
