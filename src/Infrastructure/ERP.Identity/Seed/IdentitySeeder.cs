@@ -3,6 +3,7 @@ using ERP.Persistence.Context;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace ERP.Identity.Seed;
@@ -34,9 +35,34 @@ public static class IdentitySeeder
         var logger = scope.ServiceProvider.GetRequiredService<ILogger<AppDbContext>>();
         var configuration = scope.ServiceProvider.GetRequiredService<IConfiguration>();
 
-        // Read admin password from configuration instead of hardcoding
-        var adminPassword = configuration["SeedSettings:DefaultAdminPassword"]
-            ?? throw new InvalidOperationException("SeedSettings:DefaultAdminPassword is missing from configuration.");
+        var environment = scope.ServiceProvider.GetRequiredService<IHostEnvironment>();
+
+        // Admin password MUST be provided via configuration.
+        // In Development: set in appsettings.Development.json
+        // In Production:  set via environment variable (ERP_SEED__DefaultAdminPassword)
+        //                 or user-secrets, or a vault — NEVER in tracked config files.
+        var adminPassword = configuration["SeedSettings:DefaultAdminPassword"];
+
+        if (string.IsNullOrWhiteSpace(adminPassword))
+        {
+            if (environment.IsDevelopment())
+            {
+                logger.LogWarning("SeedSettings:DefaultAdminPassword is not configured. Skipping identity seed.");
+                return;
+            }
+
+            throw new InvalidOperationException(
+                "SeedSettings:DefaultAdminPassword is required for first-run seeding. " +
+                "Set it via environment variable, user-secrets, or a secure vault.");
+        }
+
+        // Block well-known defaults in non-Development environments
+        if (!environment.IsDevelopment() && adminPassword == "Admin@123")
+        {
+            throw new InvalidOperationException(
+                "Default admin password 'Admin@123' cannot be used outside Development. " +
+                "Set a strong password via SeedSettings:DefaultAdminPassword.");
+        }
 
         try
         {
