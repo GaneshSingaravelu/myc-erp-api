@@ -1,0 +1,16 @@
+<!--
+  ERP.Persistence.SqlServer — SQL Server database provider.
+  Contains: SQL Server-specific DbContext configuration and migrations.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\ERP.Persistence\ERP.Persistence.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- SQL Server EF Core provider -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.11" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,10 @@
+<!--
+  ERP.Production.Domain — Production entities: WorkOrder, JobCard, etc. (zero DB dependency).
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\Core\ERP.SharedKernel\ERP.SharedKernel.csproj" />
+  </ItemGroup>
+
+</Project>

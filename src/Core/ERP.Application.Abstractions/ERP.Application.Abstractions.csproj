@@ -1,0 +1,24 @@
+<!--
+  ERP.Application.Abstractions — CQRS contracts, interfaces, pipeline behaviors.
+  Contains: ICommand, IQuery, IRepository, IUnitOfWork, validation pipeline.
+  Rule: References SharedKernel only. NO EF Core, NO ASP.NET references.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\ERP.SharedKernel\ERP.SharedKernel.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- MediatR: Implements Mediator pattern for CQRS (Commands/Queries) -->
+    <PackageReference Include="MediatR" Version="12.4.1" />
+
+    <!-- FluentValidation: Declarative validation rules for commands/queries -->
+    <PackageReference Include="FluentValidation" Version="11.11.0" />
+    <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="11.11.0" />
+
+    <!-- Logging abstractions — so we can log in pipeline behaviors without depending on Serilog -->
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
+  </ItemGroup>
+
+</Project>

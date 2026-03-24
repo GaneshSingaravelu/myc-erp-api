@@ -1,0 +1,11 @@
+<!--
+  ERP.Workflow.Application — Workflow commands, queries, handlers.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\ERP.Workflow.Domain\ERP.Workflow.Domain.csproj" />
+    <ProjectReference Include="..\..\..\Core\ERP.Application.Abstractions\ERP.Application.Abstractions.csproj" />
+  </ItemGroup>
+
+</Project>

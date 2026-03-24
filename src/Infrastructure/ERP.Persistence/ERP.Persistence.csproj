@@ -1,0 +1,21 @@
+<!--
+  ERP.Persistence — Shared DbContext, repositories, UnitOfWork.
+  This is where EF Core lives. Domain and Application layers NEVER reference this directly.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Core\ERP.SharedKernel\ERP.SharedKernel.csproj" />
+    <ProjectReference Include="..\..\Core\ERP.Application.Abstractions\ERP.Application.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- EF Core — the ORM that maps C# objects to database tables -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.11" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="8.0.11" />
+
+    <!-- Caching abstractions for repository-level caching -->
+    <PackageReference Include="Microsoft.Extensions.Caching.Abstractions" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,17 @@
+<!--
+  ERP.Notifications — Real-time notifications via SignalR.
+  Contains: Notification hub for job card updates, QA alerts.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Core\ERP.SharedKernel\ERP.SharedKernel.csproj" />
+    <ProjectReference Include="..\..\Core\ERP.Application.Abstractions\ERP.Application.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ASP.NET Core framework reference (includes SignalR) -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+</Project>

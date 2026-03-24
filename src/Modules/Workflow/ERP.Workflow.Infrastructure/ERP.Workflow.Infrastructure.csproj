@@ -1,0 +1,11 @@
+<!--
+  ERP.Workflow.Infrastructure — EF Core configurations, repository implementations.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\ERP.Workflow.Application\ERP.Workflow.Application.csproj" />
+    <ProjectReference Include="..\..\..\Infrastructure\ERP.Persistence\ERP.Persistence.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,11 @@
+<!--
+  ERP.Production.Application — Production commands, queries, handlers.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\ERP.Production.Domain\ERP.Production.Domain.csproj" />
+    <ProjectReference Include="..\..\..\Core\ERP.Application.Abstractions\ERP.Application.Abstractions.csproj" />
+  </ItemGroup>
+
+</Project>

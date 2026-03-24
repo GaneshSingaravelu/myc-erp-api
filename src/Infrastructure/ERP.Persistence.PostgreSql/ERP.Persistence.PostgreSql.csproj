@@ -1,0 +1,16 @@
+<!--
+  ERP.Persistence.PostgreSql — PostgreSQL database provider.
+  Contains: PostgreSQL-specific DbContext configuration and migrations.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\ERP.Persistence\ERP.Persistence.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- PostgreSQL EF Core provider (Npgsql) — free, open-source -->
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.11" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,38 @@
+<Solution>
+  <Folder Name="/src/" />
+  <Folder Name="/src/Core/">
+    <Project Path="src/Core/ERP.Application.Abstractions/ERP.Application.Abstractions.csproj" />
+    <Project Path="src/Core/ERP.SharedKernel/ERP.SharedKernel.csproj" />
+  </Folder>
+  <Folder Name="/src/Host/">
+    <Project Path="src/Host/ERP.Api/ERP.Api.csproj" />
+  </Folder>
+  <Folder Name="/src/Infrastructure/">
+    <Project Path="src/Infrastructure/ERP.Identity/ERP.Identity.csproj" />
+    <Project Path="src/Infrastructure/ERP.Infrastructure/ERP.Infrastructure.csproj" />
+    <Project Path="src/Infrastructure/ERP.Notifications/ERP.Notifications.csproj" />
+    <Project Path="src/Infrastructure/ERP.Persistence.PostgreSql/ERP.Persistence.PostgreSql.csproj" />
+    <Project Path="src/Infrastructure/ERP.Persistence.SqlServer/ERP.Persistence.SqlServer.csproj" />
+    <Project Path="src/Infrastructure/ERP.Persistence/ERP.Persistence.csproj" />
+  </Folder>
+  <Folder Name="/src/Modules/" />
+  <Folder Name="/src/Modules/Production/">
+    <Project Path="src/Modules/Production/ERP.Production.Api/ERP.Production.Api.csproj" />
+    <Project Path="src/Modules/Production/ERP.Production.Application/ERP.Production.Application.csproj" />
+    <Project Path="src/Modules/Production/ERP.Production.Domain/ERP.Production.Domain.csproj" />
+    <Project Path="src/Modules/Production/ERP.Production.Infrastructure/ERP.Production.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/src/Modules/Workflow/">
+    <Project Path="src/Modules/Workflow/ERP.Workflow.Api/ERP.Workflow.Api.csproj" />
+    <Project Path="src/Modules/Workflow/ERP.Workflow.Application/ERP.Workflow.Application.csproj" />
+    <Project Path="src/Modules/Workflow/ERP.Workflow.Domain/ERP.Workflow.Domain.csproj" />
+    <Project Path="src/Modules/Workflow/ERP.Workflow.Infrastructure/ERP.Workflow.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ERP.Architecture.Tests/ERP.Architecture.Tests.csproj" />
+    <Project Path="tests/ERP.UnitTests/ERP.UnitTests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/ERP.DbMigrator/ERP.DbMigrator.csproj" />
+  </Folder>
+</Solution>

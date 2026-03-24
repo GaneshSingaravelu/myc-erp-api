@@ -1,0 +1,35 @@
+<!--
+  ============================================================================
+  Directory.Build.props — Shared build properties for ALL projects
+  ============================================================================
+
+  WHAT IS THIS FILE?
+  ==================
+  This file is automatically picked up by MSBuild/dotnet for every project
+  in this directory and all subdirectories. Instead of repeating settings
+  in every .csproj file, we define them once here.
+
+  DESIGN PATTERN: Convention over Configuration
+  - All projects share the same .NET version, language version, and settings
+  - Individual .csproj files only contain project-specific settings
+  ============================================================================
+-->
+<Project>
+  <PropertyGroup>
+    <!-- All projects target .NET 8 LTS (Long Term Support until Nov 2026) -->
+    <TargetFramework>net8.0</TargetFramework>
+
+    <!-- Use the latest C# language features -->
+    <LangVersion>latest</LangVersion>
+
+    <!-- Enable nullable reference types — helps prevent NullReferenceException -->
+    <!-- This means: string = non-null, string? = nullable -->
+    <Nullable>enable</Nullable>
+
+    <!-- Enable implicit global usings (System, System.Collections.Generic, etc.) -->
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!-- Treat warnings as errors in Release builds to enforce code quality -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+</Project>

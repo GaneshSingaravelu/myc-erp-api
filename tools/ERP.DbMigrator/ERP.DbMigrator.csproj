@@ -1,0 +1,20 @@
+<!-- ERP.DbMigrator: Console app for running database migrations. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Infrastructure\ERP.Persistence\ERP.Persistence.csproj" />
+    <ProjectReference Include="..\..\src\Infrastructure\ERP.Persistence.SqlServer\ERP.Persistence.SqlServer.csproj" />
+    <ProjectReference Include="..\..\src\Infrastructure\ERP.Persistence.PostgreSql\ERP.Persistence.PostgreSql.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.11" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="8.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.CommandLine" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>
