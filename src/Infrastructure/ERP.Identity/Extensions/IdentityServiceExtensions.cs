@@ -41,6 +41,11 @@ public static class IdentityServiceExtensions
         // Register token service
         services.AddSingleton<ITokenService, TokenService>();
 
+        // Register identity services
+        services.AddScoped<IAuthService, AuthService>();
+        services.AddScoped<IUserService, UserService>();
+        services.AddScoped<IRoleService, RoleService>();
+
         // Configure JWT Bearer Authentication
         services.AddAuthentication(options =>
         {

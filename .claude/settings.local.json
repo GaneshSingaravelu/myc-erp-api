@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find J:/Studies/ERP/erp_api -maxdepth 3 -type f -name *.csproj -o -name *.sln -o -name *.cs -o -name *.json)",
+      "WebSearch",
+      "Bash(dotnet new:*)",
+      "Bash(dotnet --version)",
+      "Bash(dotnet --list-sdks)",
+      "Bash(dotnet sln:*)",
+      "Bash(ls \"J:/Studies/ERP/erp_api/\"*.sln)",
+      "Bash(dotnet add:*)",
+      "Bash(dotnet build:*)",
+      "Bash(wc -l \"J:/Studies/ERP/erp_api/docs/\"*.md)"
+    ]
+  }
+}
