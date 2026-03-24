@@ -153,12 +153,11 @@ dotnet test ERP.slnx
 ## Phase Status
 
 - [x] Phase 0: Solution structure, SharedKernel, Persistence, Infrastructure, Identity, Notifications, API Host
-- [ ] Phase 1: Workflow engine (ProcessTemplate, ProcessStep tables + CRUD APIs)
+- [x] Phase 1: Identity APIs (login, register, role/permission management) + Workflow engine (ProcessTemplate, ProcessStep CRUD)
 - [ ] Phase 2: Production module (WorkOrder, JobCard entities + full production flow APIs)
-- [ ] Phase 3: Identity APIs (login, register, role/permission management)
-- [ ] Phase 4: SignalR integration (job card status, QA alerts)
-- [ ] Phase 5: Reporting (open-source, Angular-compatible)
-- [ ] Phase 6: Additional modules (Finance, Sales, HR — process templates)
+- [ ] Phase 3: SignalR integration (job card status, QA alerts)
+- [ ] Phase 4: Reporting (open-source, Angular-compatible)
+- [ ] Phase 5: Additional modules (Finance, Sales, HR — process templates)
 
 ## Important Notes
 
@@ -166,8 +165,12 @@ dotnet test ERP.slnx
 - Solution file is `.slnx` format (new in .NET 10 SDK)
 - `X-Tenant-Id` header is REQUIRED for all API requests (except /health, /swagger, /auth/login, /hubs/)
 - Entity configurations in ERP.Identity are discovered by AppDbContext via assembly scanning
+- Module entity configs (Workflow, Production) registered via `AppDbContext.ConfigurationAssemblies` in their ServiceExtensions
 - Domain events are dispatched AFTER SaveChanges succeeds (via DomainEventDispatcherInterceptor)
 - Soft delete is automatic — EF Core global query filter excludes IsDeleted=true records
+- `BaseEntity.Id` uses `init` accessor — settable in object initializers, immutable after construction
+- Identity seeder runs on startup — creates default admin (admin/Admin@123), 4 roles, 28 permissions
+- Workflow engine is table-based (no Elsa) — clients modify flow via CRUD on ProcessTemplate/ProcessStep
 
 ## Design Patterns (20 Used)
 
