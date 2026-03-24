@@ -1,6 +1,7 @@
 using ERP.Identity.Entities;
 using ERP.Persistence.Context;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace ERP.Identity.Seed;

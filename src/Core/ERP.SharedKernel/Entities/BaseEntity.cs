@@ -33,7 +33,7 @@ public abstract class BaseEntity
     /// Unique identifier. Generated as Guid.NewGuid() by default.
     /// This is the PRIMARY KEY in the database table.
     /// </summary>
-    public Guid Id { get; protected set; } = Guid.NewGuid();
+    public Guid Id { get; init; } = Guid.NewGuid();
 
     /// <summary>
     /// Domain events that occurred on this entity.
