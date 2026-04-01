@@ -60,13 +60,25 @@ public class AppDbContext : DbContext
     /// we split them into one file per entity using IEntityTypeConfiguration&lt;T&gt;.
     /// ApplyConfigurationsFromAssembly() discovers and applies all of them automatically.
     /// </summary>
+    /// <summary>
+    /// Additional assemblies containing IEntityTypeConfiguration classes.
+    /// Module assemblies (Workflow, Production) register their configurations here
+    /// so AppDbContext discovers them without a direct project reference.
+    ///
+    /// Populated by each module's ServiceExtensions during DI registration.
+    /// </summary>
+    public static readonly List<System.Reflection.Assembly> ConfigurationAssemblies = [];
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
 
-        // Automatically find and apply ALL entity configurations in this assembly
-        // (any class implementing IEntityTypeConfiguration<T>)
+        // Apply configurations from the Persistence assembly (Identity entities, etc.)
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);
+
+        // Apply configurations from module assemblies (Workflow, Production, etc.)
+        foreach (var assembly in ConfigurationAssemblies)
+            modelBuilder.ApplyConfigurationsFromAssembly(assembly);
 
         // Global query filter for soft delete — EVERY query automatically excludes deleted records
         foreach (var entityType in modelBuilder.Model.GetEntityTypes())

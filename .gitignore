@@ -23,6 +23,9 @@ launchSettings.json
 ## VS Code
 .vscode/
 
+## Claude Code (machine-local tooling config)
+.claude/
+
 ## Logs
 logs/
 *.log

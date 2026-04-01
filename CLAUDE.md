@@ -5,10 +5,10 @@
 
 ## Project Overview
 
-Enterprise Resource Planning (ERP) API built with ASP.NET Core (.NET 8 LTS).
+Enterprise Resource Planning (ERP) API built with ASP.NET Core (.NET 10 STS).
 Supports multi-tenant, multi-database-provider architecture for manufacturing companies.
 
-**Stack:** .NET 8 | EF Core 8 | MediatR | FluentValidation | JWT | SignalR | Serilog
+**Stack:** .NET 10 | EF Core 10 | MediatR | FluentValidation | JWT | SignalR | Serilog
 **Frontend:** Angular (separate repository, integrated via REST API + SignalR)
 **Databases:** SQL Server, PostgreSQL (per-tenant choice), Oracle planned
 **Developer:** Solo developer, freshers joining later
@@ -127,6 +127,7 @@ ERP.slnx                              ← .NET 10 SDK format (builds net8.0 targ
 5. Authentication (JWT validation)
 6. Authorization ([Authorize] checks)
 7. TenantMiddleware (resolves X-Tenant-Id header)
+   - **Intentionally AFTER auth**: JWT uses a global signing key (not per-tenant), so auth doesn't need tenant context. Auth-first rejects unauthenticated requests before tenant lookups.
 8. Serilog request logging
 9. Controllers + SignalR hubs + Health checks
 
@@ -145,29 +146,33 @@ dotnet test ERP.slnx
 
 ## Configuration (appsettings.json)
 
-- `JwtSettings` → Secret key, issuer, audience, token expiration
-- `Tenants[]` → Array of tenant configs (Id, Identifier, ConnectionString, DbProvider)
+- `JwtSettings` → Issuer, audience, token expiration (SecretKey is a **placeholder** — override in env vars or user-secrets)
+- `Tenants[]` → Tenant configs with **placeholder** connection strings (override in appsettings.Development.json or env vars)
 - `AllowedOrigins` → CORS origins for Angular
 - `Serilog` → Log levels, sinks
+- **Secrets policy:** `appsettings.json` contains only placeholders; real values go in `appsettings.Development.json`, environment variables, or a secret store. Startup fails fast if JWT key is missing/weak (< 32 chars).
 
 ## Phase Status
 
 - [x] Phase 0: Solution structure, SharedKernel, Persistence, Infrastructure, Identity, Notifications, API Host
-- [ ] Phase 1: Workflow engine (ProcessTemplate, ProcessStep tables + CRUD APIs)
-- [ ] Phase 2: Production module (WorkOrder, JobCard entities + full production flow APIs)
-- [ ] Phase 3: Identity APIs (login, register, role/permission management)
-- [ ] Phase 4: SignalR integration (job card status, QA alerts)
-- [ ] Phase 5: Reporting (open-source, Angular-compatible)
-- [ ] Phase 6: Additional modules (Finance, Sales, HR — process templates)
+- [x] Phase 1: Identity APIs (login, register, role/permission management) + Workflow engine (ProcessTemplate, ProcessStep CRUD)
+- [~] Phase 2: Production module — WorkOrder & JobCard entities, CRUD commands/queries, controllers (IN PROGRESS, uncommitted)
+- [ ] Phase 3: SignalR integration (job card status, QA alerts)
+- [ ] Phase 4: Reporting (open-source, Angular-compatible)
+- [ ] Phase 5: Additional modules (Finance, Sales, HR — process templates)
 
 ## Important Notes
 
-- .NET 10 SDK is installed but ALL projects target `net8.0` (via Directory.Build.props)
+- .NET 10 SDK is installed; ALL projects now target `net10.0` (via Directory.Build.props)
 - Solution file is `.slnx` format (new in .NET 10 SDK)
 - `X-Tenant-Id` header is REQUIRED for all API requests (except /health, /swagger, /auth/login, /hubs/)
 - Entity configurations in ERP.Identity are discovered by AppDbContext via assembly scanning
+- Module entity configs (Workflow, Production) registered via `AppDbContext.ConfigurationAssemblies` in their ServiceExtensions
 - Domain events are dispatched AFTER SaveChanges succeeds (via DomainEventDispatcherInterceptor)
 - Soft delete is automatic — EF Core global query filter excludes IsDeleted=true records
+- `BaseEntity.Id` uses `init` accessor — settable in object initializers, immutable after construction
+- Identity seeder runs on startup — creates default admin (admin/Admin@123), 4 roles, 28 permissions
+- Workflow engine is table-based (no Elsa) — clients modify flow via CRUD on ProcessTemplate/ProcessStep
 
 ## Design Patterns (20 Used)
 

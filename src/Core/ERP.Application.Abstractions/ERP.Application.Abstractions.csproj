@@ -11,14 +11,14 @@
 
   <ItemGroup>
     <!-- MediatR: Implements Mediator pattern for CQRS (Commands/Queries) -->
-    <PackageReference Include="MediatR" Version="12.4.1" />
+    <PackageReference Include="MediatR" Version="14.1.0" />
 
     <!-- FluentValidation: Declarative validation rules for commands/queries -->
-    <PackageReference Include="FluentValidation" Version="11.11.0" />
-    <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="11.11.0" />
+    <PackageReference Include="FluentValidation" Version="12.1.1" />
+    <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="12.1.1" />
 
     <!-- Logging abstractions — so we can log in pipeline behaviors without depending on Serilog -->
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.5" />
   </ItemGroup>
 
 </Project>

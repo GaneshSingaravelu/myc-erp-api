@@ -16,8 +16,8 @@
 -->
 <Project>
   <PropertyGroup>
-    <!-- All projects target .NET 8 LTS (Long Term Support until Nov 2026) -->
-    <TargetFramework>net8.0</TargetFramework>
+    <!-- All projects target .NET 10 (STS — Standard Term Support, Nov 2025 – May 2027) -->
+    <TargetFramework>net10.0</TargetFramework>
 
     <!-- Use the latest C# language features -->
     <LangVersion>latest</LangVersion>

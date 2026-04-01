@@ -1,6 +1,7 @@
 using System.Text;
 using ERP.Identity.Configuration;
 using ERP.Identity.Services;
+using ERP.Persistence.Context;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -36,10 +37,33 @@ public static class IdentityServiceExtensions
         var jwtSettings = configuration.GetSection(JwtSettings.SectionName).Get<JwtSettings>()
             ?? throw new InvalidOperationException("JwtSettings section is missing from configuration.");
 
+        // ── Startup guard: fail fast if the JWT secret key is weak ──
+        // HMAC-SHA256 requires a key of at least 256 bits (32 bytes).
+        // A placeholder or missing key should crash at startup, not silently produce weak tokens.
+        const int minimumKeyLength = 32;
+        if (string.IsNullOrWhiteSpace(jwtSettings.SecretKey)
+            || jwtSettings.SecretKey.Length < minimumKeyLength
+            || jwtSettings.SecretKey.Contains("REPLACE_ME", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"JwtSettings:SecretKey is missing, a placeholder, or too short. " +
+                $"It must be at least {minimumKeyLength} characters. " +
+                $"Set it via environment variable, user-secrets, or appsettings.Development.json.");
+        }
+
         services.Configure<JwtSettings>(configuration.GetSection(JwtSettings.SectionName));
+
+        // Register Identity entity configurations with AppDbContext
+        // Without this, EF Core won't discover table mappings for Users, Roles, Permissions, etc.
+        AppDbContext.ConfigurationAssemblies.Add(typeof(IdentityServiceExtensions).Assembly);
 
         // Register token service
         services.AddSingleton<ITokenService, TokenService>();
+
+        // Register identity services
+        services.AddScoped<IAuthService, AuthService>();
+        services.AddScoped<IUserService, UserService>();
+        services.AddScoped<IRoleService, RoleService>();
 
         // Configure JWT Bearer Authentication
         services.AddAuthentication(options =>
