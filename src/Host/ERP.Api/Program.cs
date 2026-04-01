@@ -181,6 +181,12 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 // 7. Tenant Resolution (reads X-Tenant-Id header, resolves tenant)
+// ── WHY AFTER AUTH, NOT BEFORE? ──
+// JWT auth uses a GLOBAL signing key (not per-tenant), so it doesn't need tenant context.
+// Running auth first means unauthenticated requests are rejected early — before we spend
+// time looking up tenant info and establishing a database connection.
+// The tenant_id is also embedded as a JWT claim, so downstream code can cross-check
+// the header tenant against the token's tenant for extra security.
 app.UseMiddleware<TenantMiddleware>();
 
 // 8. Serilog request logging (logs every HTTP request with timing)

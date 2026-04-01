@@ -127,6 +127,7 @@ ERP.slnx                              ← .NET 10 SDK format (builds net8.0 targ
 5. Authentication (JWT validation)
 6. Authorization ([Authorize] checks)
 7. TenantMiddleware (resolves X-Tenant-Id header)
+   - **Intentionally AFTER auth**: JWT uses a global signing key (not per-tenant), so auth doesn't need tenant context. Auth-first rejects unauthenticated requests before tenant lookups.
 8. Serilog request logging
 9. Controllers + SignalR hubs + Health checks
 
@@ -145,10 +146,11 @@ dotnet test ERP.slnx
 
 ## Configuration (appsettings.json)
 
-- `JwtSettings` → Secret key, issuer, audience, token expiration
-- `Tenants[]` → Array of tenant configs (Id, Identifier, ConnectionString, DbProvider)
+- `JwtSettings` → Issuer, audience, token expiration (SecretKey is a **placeholder** — override in env vars or user-secrets)
+- `Tenants[]` → Tenant configs with **placeholder** connection strings (override in appsettings.Development.json or env vars)
 - `AllowedOrigins` → CORS origins for Angular
 - `Serilog` → Log levels, sinks
+- **Secrets policy:** `appsettings.json` contains only placeholders; real values go in `appsettings.Development.json`, environment variables, or a secret store. Startup fails fast if JWT key is missing/weak (< 32 chars).
 
 ## Phase Status
 

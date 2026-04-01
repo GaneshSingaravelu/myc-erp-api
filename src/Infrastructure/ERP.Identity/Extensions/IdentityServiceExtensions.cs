@@ -37,6 +37,20 @@ public static class IdentityServiceExtensions
         var jwtSettings = configuration.GetSection(JwtSettings.SectionName).Get<JwtSettings>()
             ?? throw new InvalidOperationException("JwtSettings section is missing from configuration.");
 
+        // ── Startup guard: fail fast if the JWT secret key is weak ──
+        // HMAC-SHA256 requires a key of at least 256 bits (32 bytes).
+        // A placeholder or missing key should crash at startup, not silently produce weak tokens.
+        const int minimumKeyLength = 32;
+        if (string.IsNullOrWhiteSpace(jwtSettings.SecretKey)
+            || jwtSettings.SecretKey.Length < minimumKeyLength
+            || jwtSettings.SecretKey.Contains("REPLACE_ME", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"JwtSettings:SecretKey is missing, a placeholder, or too short. " +
+                $"It must be at least {minimumKeyLength} characters. " +
+                $"Set it via environment variable, user-secrets, or appsettings.Development.json.");
+        }
+
         services.Configure<JwtSettings>(configuration.GetSection(JwtSettings.SectionName));
 
         // Register Identity entity configurations with AppDbContext
