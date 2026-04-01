@@ -6,6 +6,7 @@ using ERP.Infrastructure.Extensions;
 using ERP.Infrastructure.Tenant;
 using ERP.Notifications.Hubs;
 using ERP.Persistence.Extensions;
+using ERP.Production.Infrastructure.Extensions;
 using ERP.Workflow.Infrastructure.Extensions;
 using MediatR;
 using Serilog;
@@ -65,6 +66,7 @@ builder.Services.AddMediatR(cfg =>
     // Register handlers from all assemblies
     cfg.RegisterServicesFromAssembly(typeof(ValidationBehavior<,>).Assembly);
     cfg.RegisterServicesFromAssembly(typeof(ERP.Workflow.Application.Commands.CreateProcessTemplateCommand).Assembly);
+    cfg.RegisterServicesFromAssembly(typeof(ERP.Production.Application.Commands.CreateWorkOrderCommand).Assembly);
 
     // Register pipeline behaviors (run BEFORE every handler)
     cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
@@ -83,6 +85,9 @@ builder.Services.AddIdentityServices(builder.Configuration);
 // --- Workflow Module: Process Templates ---
 builder.Services.AddWorkflowModule();
 
+// --- Production Module: Work Orders, Job Cards ---
+builder.Services.AddProductionModule();
+
 // --- Notifications: SignalR ---
 builder.Services.AddSignalR();
 
@@ -93,7 +98,7 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
-    options.SwaggerDoc("v1", new Microsoft.OpenApi.Models.OpenApiInfo
+    options.SwaggerDoc("v1", new Microsoft.OpenApi.OpenApiInfo
     {
         Title = "ERP API",
         Version = "v1",
@@ -101,28 +106,21 @@ builder.Services.AddSwaggerGen(options =>
     });
 
     // Add JWT Bearer token input to Swagger UI
-    options.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+    options.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.OpenApiSecurityScheme
     {
         Name = "Authorization",
-        Type = Microsoft.OpenApi.Models.SecuritySchemeType.Http,
+        Type = Microsoft.OpenApi.SecuritySchemeType.Http,
         Scheme = "bearer",
         BearerFormat = "JWT",
-        In = Microsoft.OpenApi.Models.ParameterLocation.Header,
+        In = Microsoft.OpenApi.ParameterLocation.Header,
         Description = "Enter your JWT token. Example: eyJhbGciOiJIUzI1NiIs..."
     });
 
-    options.AddSecurityRequirement(new Microsoft.OpenApi.Models.OpenApiSecurityRequirement
+    options.AddSecurityRequirement(_ => new Microsoft.OpenApi.OpenApiSecurityRequirement
     {
         {
-            new Microsoft.OpenApi.Models.OpenApiSecurityScheme
-            {
-                Reference = new Microsoft.OpenApi.Models.OpenApiReference
-                {
-                    Type = Microsoft.OpenApi.Models.ReferenceType.SecurityScheme,
-                    Id = "Bearer"
-                }
-            },
-            Array.Empty<string>()
+            new Microsoft.OpenApi.OpenApiSecuritySchemeReference("Bearer"),
+            new List<string>()
         }
     });
 });

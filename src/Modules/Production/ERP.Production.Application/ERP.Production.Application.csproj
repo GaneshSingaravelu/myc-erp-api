@@ -5,6 +5,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\ERP.Production.Domain\ERP.Production.Domain.csproj" />
+    <ProjectReference Include="..\..\Workflow\ERP.Workflow.Domain\ERP.Workflow.Domain.csproj" />
     <ProjectReference Include="..\..\..\Core\ERP.Application.Abstractions\ERP.Application.Abstractions.csproj" />
   </ItemGroup>
 

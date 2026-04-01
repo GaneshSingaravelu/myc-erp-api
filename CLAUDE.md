@@ -5,10 +5,10 @@
 
 ## Project Overview
 
-Enterprise Resource Planning (ERP) API built with ASP.NET Core (.NET 8 LTS).
+Enterprise Resource Planning (ERP) API built with ASP.NET Core (.NET 10 STS).
 Supports multi-tenant, multi-database-provider architecture for manufacturing companies.
 
-**Stack:** .NET 8 | EF Core 8 | MediatR | FluentValidation | JWT | SignalR | Serilog
+**Stack:** .NET 10 | EF Core 10 | MediatR | FluentValidation | JWT | SignalR | Serilog
 **Frontend:** Angular (separate repository, integrated via REST API + SignalR)
 **Databases:** SQL Server, PostgreSQL (per-tenant choice), Oracle planned
 **Developer:** Solo developer, freshers joining later
@@ -154,14 +154,14 @@ dotnet test ERP.slnx
 
 - [x] Phase 0: Solution structure, SharedKernel, Persistence, Infrastructure, Identity, Notifications, API Host
 - [x] Phase 1: Identity APIs (login, register, role/permission management) + Workflow engine (ProcessTemplate, ProcessStep CRUD)
-- [ ] Phase 2: Production module (WorkOrder, JobCard entities + full production flow APIs)
+- [~] Phase 2: Production module — WorkOrder & JobCard entities, CRUD commands/queries, controllers (IN PROGRESS, uncommitted)
 - [ ] Phase 3: SignalR integration (job card status, QA alerts)
 - [ ] Phase 4: Reporting (open-source, Angular-compatible)
 - [ ] Phase 5: Additional modules (Finance, Sales, HR — process templates)
 
 ## Important Notes
 
-- .NET 10 SDK is installed but ALL projects target `net8.0` (via Directory.Build.props)
+- .NET 10 SDK is installed; ALL projects now target `net10.0` (via Directory.Build.props)
 - Solution file is `.slnx` format (new in .NET 10 SDK)
 - `X-Tenant-Id` header is REQUIRED for all API requests (except /health, /swagger, /auth/login, /hubs/)
 - Entity configurations in ERP.Identity are discovered by AppDbContext via assembly scanning
