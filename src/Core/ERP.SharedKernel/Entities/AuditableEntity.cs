@@ -1,42 +1,40 @@
 namespace ERP.SharedKernel.Entities;
 
 /// <summary>
-/// AUDITABLE ENTITY — Adds "who created/modified this and when?" tracking.
+/// AUDITABLE ENTITY — Adds audit tracking, soft delete, and business-level active flag.
 ///
-/// WHY AUDIT FIELDS?
-/// ==================
-/// In ERP systems, you ALWAYS need to know:
-/// - Who created a record? (CreatedBy)
-/// - When was it created? (CreatedAt)
-/// - Who last modified it? (LastModifiedBy)
-/// - When was it last modified? (LastModifiedAt)
-/// - Is it deleted? (IsDeleted) — Soft delete pattern
+/// HYBRID SOFT DELETE STRATEGY (ERP Requirement):
+/// ================================================
+/// Two independent flags serve different purposes:
 ///
-/// DESIGN PATTERN: Soft Delete
-/// ============================
-/// Instead of actually deleting records from the database (hard delete),
-/// we set IsDeleted = true. This way:
-/// - Data is never lost (audit trail, compliance)
-/// - Related records don't break (foreign key integrity)
-/// - You can "undelete" records if needed
-/// - All queries automatically filter out deleted records (via EF Core global query filter)
+///   IsActive = false → "Account suspended" (reversible by admin)
+///   IsDeleted = true → "Logically removed" (hidden from all queries)
 ///
-/// INTERVIEW TIP: "We use soft delete with a global query filter in EF Core
-/// to automatically exclude deleted records from all queries."
+/// Example:
+///   Employee leaves company → IsActive = false (account disabled, record visible in reports)
+///   GDPR data removal request → IsDeleted = true (hidden from all queries, audit preserved)
+///
+/// EF Core global query filter automatically excludes IsDeleted=true from all queries.
+/// To include deleted records: _context.Users.IgnoreQueryFilters().ToListAsync()
+///
+/// DESIGN PATTERN: Layer Supertype + Soft Delete
 /// </summary>
 public abstract class AuditableEntity : BaseEntity
 {
+    /// <summary>Business-level enable/disable. Inactive records are visible but cannot be used.</summary>
+    public bool IsActive { get; set; } = true;
+
     /// <summary>When this record was first created (UTC)</summary>
     public DateTime CreatedAt { get; set; }
 
-    /// <summary>User ID or username of who created this record</summary>
-    public string? CreatedBy { get; set; }
+    /// <summary>User ID of who created this record (FK to Users in Master DB)</summary>
+    public Guid? CreatedBy { get; set; }
 
     /// <summary>When this record was last modified (UTC)</summary>
     public DateTime? LastModifiedAt { get; set; }
 
-    /// <summary>User ID or username of who last modified this record</summary>
-    public string? LastModifiedBy { get; set; }
+    /// <summary>User ID of who last modified this record (FK to Users in Master DB)</summary>
+    public Guid? LastModifiedBy { get; set; }
 
     /// <summary>
     /// Soft delete flag. When true, this record is "deleted" but still in the database.
@@ -47,6 +45,6 @@ public abstract class AuditableEntity : BaseEntity
     /// <summary>When this record was soft-deleted (UTC)</summary>
     public DateTime? DeletedAt { get; set; }
 
-    /// <summary>User ID or username of who deleted this record</summary>
-    public string? DeletedBy { get; set; }
+    /// <summary>User ID of who deleted this record (FK to Users in Master DB)</summary>
+    public Guid? DeletedBy { get; set; }
 }

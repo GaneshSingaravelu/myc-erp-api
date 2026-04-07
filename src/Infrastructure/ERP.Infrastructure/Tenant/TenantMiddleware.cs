@@ -151,6 +151,7 @@ public class TenantMiddleware
         return path.StartsWith("/health")
             || path.StartsWith("/swagger")
             || path.StartsWith("/api/v1/auth/login")
+            || path.StartsWith("/api/v1/tenants")
             || path.StartsWith("/hubs/");
     }
 }

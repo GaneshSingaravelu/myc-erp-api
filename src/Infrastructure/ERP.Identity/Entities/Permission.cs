@@ -5,47 +5,45 @@ namespace ERP.Identity.Entities;
 /// <summary>
 /// PERMISSION — A fine-grained action that can be performed in the system.
 ///
-/// RBAC vs PERMISSION-BASED ACCESS (Interview Question!)
-/// ======================================================
-/// RBAC (Role-Based): "You are an Admin, so you can do everything."
-///   → Simple, but not flexible enough for complex ERP scenarios.
-///
-/// Permission-Based: "You have the 'jobcard.create' permission."
-///   → Fine-grained control. A role is just a GROUP of permissions.
-///
-/// OUR APPROACH: HYBRID
-///   - Roles group users (Admin, Operator, QA)
-///   - Permissions define actions (jobcard.create, workorder.approve)
-///   - Roles have permissions (Admin → all permissions)
-///   - Check happens at the permission level, not role level
+/// Permissions are system-defined (seeded), NOT tenant-created.
+/// They are immutable reference data — no AuditableEntity needed.
 ///
 /// PERMISSION NAMING CONVENTION:
 /// ==============================
-///   {module}.{action}
+///   CATEGORY_ACTION (uppercase with underscore)
 ///   Examples:
-///     "workorder.create"    — Create work orders
-///     "workorder.view"      — View work orders
-///     "jobcard.create"      — Create job cards
-///     "jobcard.split"       — Split job cards
-///     "qa.inspect"          — Perform QA inspection
-///     "qa.approve"          — Approve QA results
-///     "production.start"    — Start production
-///     "user.manage"         — Manage users (admin)
+///     "WORKORDER_CREATE"   — Create work orders
+///     "JOBCARD_VIEW"       — View job cards
+///     "QA_APPROVE"         — Approve QA results
+///     "PRODUCTION_MANAGE"  — Manage production data
+///     "USER_CREATE"        — Create users (admin)
+///     "TENANT_MANAGE"      — Manage tenant settings
+///
+/// HYBRID ACCESS CONTROL:
+/// =======================
+///   RBAC: Role-based checks ([Authorize(Roles = "Admin")])
+///   Permission-based: Fine-grained checks (HasPermission("QA_APPROVE"))
+///   ABAC (future): RolePermissions.ConditionJson for data-level filtering
 /// </summary>
 public class Permission : BaseEntity
 {
-    /// <summary>
-    /// Permission code in format: module.action
-    /// Example: "jobcard.create", "qa.approve"
-    /// </summary>
+    /// <summary>Permission code: CATEGORY_ACTION (e.g., "JOBCARD_CREATE", "QA_APPROVE")</summary>
     public string Code { get; set; } = string.Empty;
 
     /// <summary>Human-readable name. Example: "Create Job Card"</summary>
     public string Name { get; set; } = string.Empty;
 
-    /// <summary>Which module this permission belongs to. Example: "Production"</summary>
-    public string Module { get; set; } = string.Empty;
+    /// <summary>Grouping for admin UI (e.g., "Production", "Quality", "Admin")</summary>
+    public string Category { get; set; } = string.Empty;
 
-    /// <summary>Navigation: roles that have this permission</summary>
+    /// <summary>Detailed explanation of what this permission allows</summary>
+    public string? Description { get; set; }
+
+    // ── Navigation Properties ──
+
+    /// <summary>Roles that have this permission</summary>
     public ICollection<AppRolePermission> RolePermissions { get; set; } = [];
+
+    /// <summary>Menus that require this permission</summary>
+    public ICollection<MenuPermission> MenuPermissions { get; set; } = [];
 }

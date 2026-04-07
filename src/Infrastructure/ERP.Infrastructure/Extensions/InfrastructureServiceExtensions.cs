@@ -4,6 +4,7 @@ using ERP.Infrastructure.Caching;
 using ERP.Infrastructure.Tenant;
 using ERP.Persistence.Context;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -76,9 +77,11 @@ public static class InfrastructureServiceExtensions
         // Register HttpContextAccessor — needed to access HttpContext outside controllers
         services.AddHttpContextAccessor();
 
-        // Tenant store: reads tenant list from appsettings.json
-        // Later, swap with EfCoreTenantStore for database-backed tenants
-        services.AddSingleton<ITenantStore, ConfigurationTenantStore>();
+        // Tenant store: reads tenants from Master DB (replaced ConfigurationTenantStore)
+        services.AddScoped<ITenantStore, MasterDbTenantStore>();
+
+        // Tenant provisioning: creates databases + runs migrations for new tenants
+        services.AddScoped<ITenantProvisioningService, TenantProvisioningService>();
 
         // Tenant provider: reads current tenant from HttpContext (set by TenantMiddleware)
         services.AddScoped<ITenantProvider, HttpContextTenantProvider>();
@@ -90,6 +93,17 @@ public static class InfrastructureServiceExtensions
         // DB CONTEXT FACTORY (Multi-Tenant + Multi-Provider)
         // ──────────────────────────────────────────────────────
 
+        // --- MASTER DB CONTEXT (Identity, Access Control, Menus) ---
+        // MasterDbContext uses a fixed connection string (not per-tenant)
+        var masterConnectionString = configuration.GetConnectionString("MasterDb")
+            ?? throw new InvalidOperationException(
+                "MasterDb connection string is missing. " +
+                "Set ConnectionStrings:MasterDb in appsettings.Development.json or environment variables.");
+
+        services.AddDbContext<MasterDbContext>(options =>
+            options.UseSqlServer(masterConnectionString));
+
+        // --- TENANT DB CONTEXT FACTORY (Multi-Tenant + Multi-Provider) ---
         // Register the factory that creates the right DbContext per tenant
         services.AddScoped<IDbContextFactory<AppDbContext>, TenantDbContextFactory>();
 

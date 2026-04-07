@@ -39,7 +39,8 @@ public sealed class AuditableEntityInterceptor : SaveChangesInterceptor
         if (context is null) return base.SavingChangesAsync(eventData, result, cancellationToken);
 
         var now = DateTime.UtcNow;
-        var userId = _currentUser.UserId ?? "system";
+        // Parse UserId from JWT claims (string) to Guid for audit columns
+        Guid? userGuid = Guid.TryParse(_currentUser.UserId, out var parsed) ? parsed : null;
 
         foreach (var entry in context.ChangeTracker.Entries<AuditableEntity>())
         {
@@ -47,12 +48,12 @@ public sealed class AuditableEntityInterceptor : SaveChangesInterceptor
             {
                 case EntityState.Added:
                     entry.Entity.CreatedAt = now;
-                    entry.Entity.CreatedBy = userId;
+                    entry.Entity.CreatedBy = userGuid;
                     break;
 
                 case EntityState.Modified:
                     entry.Entity.LastModifiedAt = now;
-                    entry.Entity.LastModifiedBy = userId;
+                    entry.Entity.LastModifiedBy = userGuid;
                     break;
 
                 case EntityState.Deleted:
@@ -60,7 +61,7 @@ public sealed class AuditableEntityInterceptor : SaveChangesInterceptor
                     entry.State = EntityState.Modified;
                     entry.Entity.IsDeleted = true;
                     entry.Entity.DeletedAt = now;
-                    entry.Entity.DeletedBy = userId;
+                    entry.Entity.DeletedBy = userGuid;
                     break;
             }
         }

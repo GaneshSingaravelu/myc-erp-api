@@ -3,66 +3,97 @@ using ERP.SharedKernel.Entities;
 namespace ERP.Identity.Entities;
 
 /// <summary>
-/// APPLICATION USER — Represents a user in the ERP system.
+/// APPLICATION USER — Global identity record stored in the Master DB.
 ///
-/// WHY NOT USE ASP.NET Core Identity's IdentityUser?
-/// ===================================================
-/// ASP.NET Core Identity is a full user management framework with its own tables,
-/// password handling, and token management. It's great for general web apps.
+/// A user is a PERSON, not a tenant-scoped record. The same user can access
+/// multiple tenants via the UserTenants junction table with different roles per tenant.
 ///
-/// For our ERP, we build our own because:
-/// 1. We need multi-tenant users (each tenant has their own user table)
-/// 2. We need ERP-specific fields (PlantId, EmployeeId, Department)
-/// 3. We want full control over the JWT claims
-/// 4. We use our own audit trail (AuditableEntity)
-/// 5. Simpler to understand and teach to freshers
+/// KEY DESIGN DECISIONS:
+/// =====================
+/// - NormalizedUserName/Email: Uppercase copies for case-insensitive lookups without collation issues
+/// - SecurityStamp: Random GUID that changes on password/security changes; invalidates all sessions
+/// - ConcurrencyStamp: Optimistic concurrency; prevents simultaneous edits overwriting each other
+/// - Account lockout: 5 failed attempts → 15 min lock (IsLocked, LockoutEnd, AccessFailedCount)
+/// - No TenantId on Users: tenant relationship is many-to-many via UserTenants
 ///
 /// PASSWORD SECURITY:
 /// ===================
-/// We NEVER store passwords as plain text. We store a "hash":
-///   Password: "MyP@ssw0rd"
-///   Hash:     "$2a$11$rGJh2..." (BCrypt hash — cannot be reversed!)
-///
-/// When user logs in:
-///   1. User sends password: "MyP@ssw0rd"
-///   2. We hash it and compare with stored hash
-///   3. Match → generate JWT token
-///   4. No match → return 401 Unauthorized
-///
-/// BCrypt is used because it's intentionally SLOW (prevents brute force attacks).
+/// BCrypt hashing (intentionally slow to prevent brute force).
+/// Password history tracked in UserPasswordHistory table (last 5 hashes).
 /// </summary>
 public class AppUser : AuditableEntity
 {
-    /// <summary>Unique username for login</summary>
+    /// <summary>Unique username for login (max 100)</summary>
     public string UserName { get; set; } = string.Empty;
 
-    /// <summary>User's email address</summary>
+    /// <summary>Uppercase copy for case-insensitive lookup (auto-computed)</summary>
+    public string NormalizedUserName { get; set; } = string.Empty;
+
+    /// <summary>User's email address (max 200)</summary>
     public string Email { get; set; } = string.Empty;
+
+    /// <summary>Uppercase copy for case-insensitive lookup (auto-computed)</summary>
+    public string NormalizedEmail { get; set; } = string.Empty;
 
     /// <summary>BCrypt-hashed password (NEVER store plain text!)</summary>
     public string PasswordHash { get; set; } = string.Empty;
 
-    /// <summary>User's first name</summary>
+    /// <summary>
+    /// Random GUID that changes on password/security changes.
+    /// Used to invalidate all existing tokens when security state changes.
+    /// </summary>
+    public string SecurityStamp { get; set; } = Guid.NewGuid().ToString();
+
+    /// <summary>
+    /// Optimistic concurrency stamp. EF Core checks this on update to prevent
+    /// simultaneous edits from overwriting each other.
+    /// </summary>
+    public string ConcurrencyStamp { get; set; } = Guid.NewGuid().ToString();
+
+    /// <summary>User's first name (max 100)</summary>
     public string FirstName { get; set; } = string.Empty;
 
-    /// <summary>User's last name</summary>
+    /// <summary>User's last name (max 100)</summary>
     public string LastName { get; set; } = string.Empty;
 
-    /// <summary>Full name for display</summary>
-    public string FullName => $"{FirstName} {LastName}".Trim();
+    /// <summary>Optional display name (falls back to FirstName + LastName if null)</summary>
+    public string? DisplayName { get; set; }
 
-    /// <summary>Is this user account active? Inactive users cannot log in.</summary>
-    public bool IsActive { get; set; } = true;
+    /// <summary>Full name for display (computed, not stored)</summary>
+    public string FullName => DisplayName ?? $"{FirstName} {LastName}".Trim();
 
-    /// <summary>Last successful login time</summary>
+    /// <summary>Phone number (max 20, optional)</summary>
+    public string? PhoneNumber { get; set; }
+
+    /// <summary>Is the account locked due to failed login attempts?</summary>
+    public bool IsLocked { get; set; }
+
+    /// <summary>When the lockout expires (NULL = not locked). Auto-unlocks after this time.</summary>
+    public DateTime? LockoutEnd { get; set; }
+
+    /// <summary>Consecutive failed login attempts. Reset to 0 on successful login.</summary>
+    public int AccessFailedCount { get; set; }
+
+    /// <summary>Last successful login time (UTC)</summary>
     public DateTime? LastLoginAt { get; set; }
 
-    /// <summary>The stored refresh token (for JWT refresh flow)</summary>
-    public string? RefreshToken { get; set; }
+    /// <summary>When the password was last changed (UTC)</summary>
+    public DateTime? LastPasswordChangedAt { get; set; }
 
-    /// <summary>When the refresh token expires</summary>
-    public DateTime? RefreshTokenExpiresAt { get; set; }
+    /// <summary>Force password change on next login (e.g., after admin reset)</summary>
+    public bool MustChangePassword { get; set; }
 
-    /// <summary>Navigation property: roles assigned to this user (many-to-many)</summary>
+    // ── Navigation Properties ──
+
+    /// <summary>Tenant memberships for this user (many-to-many via UserTenants)</summary>
+    public ICollection<UserTenant> UserTenants { get; set; } = [];
+
+    /// <summary>Role assignments per tenant (many-to-many via UserRoles)</summary>
     public ICollection<AppUserRole> UserRoles { get; set; } = [];
+
+    /// <summary>Active login sessions across devices and tenants</summary>
+    public ICollection<UserSession> Sessions { get; set; } = [];
+
+    /// <summary>Password history for preventing reuse</summary>
+    public ICollection<UserPasswordHistory> PasswordHistory { get; set; } = [];
 }

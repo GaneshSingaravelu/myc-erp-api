@@ -9,6 +9,9 @@
     <ProjectReference Include="..\..\src\Infrastructure\ERP.Persistence\ERP.Persistence.csproj" />
     <ProjectReference Include="..\..\src\Infrastructure\ERP.Persistence.SqlServer\ERP.Persistence.SqlServer.csproj" />
     <ProjectReference Include="..\..\src\Infrastructure\ERP.Persistence.PostgreSql\ERP.Persistence.PostgreSql.csproj" />
+    <ProjectReference Include="..\..\src\Infrastructure\ERP.Identity\ERP.Identity.csproj" />
+    <ProjectReference Include="..\..\src\Modules\Workflow\ERP.Workflow.Infrastructure\ERP.Workflow.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Modules\Production\ERP.Production.Infrastructure\ERP.Production.Infrastructure.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -53,9 +53,9 @@ public static class IdentityServiceExtensions
 
         services.Configure<JwtSettings>(configuration.GetSection(JwtSettings.SectionName));
 
-        // Register Identity entity configurations with AppDbContext
+        // Register Identity entity configurations with MasterDbContext
         // Without this, EF Core won't discover table mappings for Users, Roles, Permissions, etc.
-        AppDbContext.ConfigurationAssemblies.Add(typeof(IdentityServiceExtensions).Assembly);
+        MasterDbContext.ConfigurationAssemblies.Add(typeof(IdentityServiceExtensions).Assembly);
 
         // Register token service
         services.AddSingleton<ITokenService, TokenService>();
@@ -64,6 +64,8 @@ public static class IdentityServiceExtensions
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<IUserService, UserService>();
         services.AddScoped<IRoleService, RoleService>();
+        services.AddScoped<ITenantManagementService, TenantManagementService>();
+        services.AddScoped<IMenuService, MenuService>();
 
         // Configure JWT Bearer Authentication
         services.AddAuthentication(options =>

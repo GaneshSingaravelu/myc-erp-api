@@ -54,6 +54,7 @@ public class TokenService : ITokenService
             new(ClaimTypes.Name, user.UserName),
             new(ClaimTypes.Email, user.Email),
             new("tenant_id", tenantId),
+            new("security_stamp", user.SecurityStamp),
             new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()) // Unique token ID
         };
 
