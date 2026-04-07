@@ -3,6 +3,7 @@ using ERP.Application.Abstractions.Identity;
 using ERP.Infrastructure.Caching;
 using ERP.Infrastructure.Tenant;
 using ERP.Persistence.Context;
+using ERP.Persistence.Interceptors;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Configuration;
@@ -100,8 +101,13 @@ public static class InfrastructureServiceExtensions
                 "MasterDb connection string is missing. " +
                 "Set ConnectionStrings:MasterDb in appsettings.Development.json or environment variables.");
 
-        services.AddDbContext<MasterDbContext>(options =>
-            options.UseSqlServer(masterConnectionString));
+        services.AddDbContext<MasterDbContext>((sp, options) =>
+        {
+            options.UseSqlServer(masterConnectionString);
+            options.AddInterceptors(
+                sp.GetRequiredService<AuditableEntityInterceptor>(),
+                sp.GetRequiredService<DomainEventDispatcherInterceptor>());
+        });
 
         // --- TENANT DB CONTEXT FACTORY (Multi-Tenant + Multi-Provider) ---
         // Register the factory that creates the right DbContext per tenant

@@ -135,9 +135,19 @@ public class AuthService : IAuthService
             resolvedTenantId = tenant.Id;
         }
 
-        // Step 6: Generate tokens
-        var accessToken = _tokenService.GenerateAccessToken(user, roles, permissions, tenantId);
+        // Step 6: Generate tokens — JTI must match between token and session for revocation checks
+        var jti = Guid.NewGuid().ToString();
         var refreshToken = _tokenService.GenerateRefreshToken();
+
+        // Resolve tenant identifier for the token claim (use Code, not GUID)
+        var tenantForClaim = tenantId;
+        if (Guid.TryParse(tenantId, out _))
+        {
+            var tenantEntity = await _context.Set<Tenant>().FindAsync(resolvedTenantId);
+            tenantForClaim = tenantEntity?.Code ?? tenantId;
+        }
+
+        var accessToken = _tokenService.GenerateAccessToken(user, roles, permissions, tenantForClaim, jti);
 
         // Step 7: Create session record (multi-device support)
         var session = new UserSession
@@ -146,7 +156,7 @@ public class AuthService : IAuthService
             TenantId = resolvedTenantId,
             RefreshToken = refreshToken,
             RefreshTokenExpiry = DateTime.UtcNow.AddDays(_jwtSettings.RefreshTokenExpirationDays),
-            AccessTokenJti = Guid.NewGuid().ToString(),
+            AccessTokenJti = jti,
             ExpiresAt = DateTime.UtcNow.AddDays(_jwtSettings.RefreshTokenExpirationDays),
             CreatedAt = DateTime.UtcNow
         };
@@ -155,7 +165,7 @@ public class AuthService : IAuthService
         user.LastLoginAt = DateTime.UtcNow;
         await _context.SaveChangesAsync();
 
-        _logger.LogInformation("User '{UserName}' logged in successfully", user.UserName);
+        _logger.LogInformation("User '{UserName}' logged in successfully for tenant '{TenantId}'", user.UserName, tenantForClaim);
 
         return Result.Success(new LoginResponse(
             AccessToken: accessToken,
@@ -205,15 +215,53 @@ public class AuthService : IAuthService
         if (userIdClaim is null || !Guid.TryParse(userIdClaim, out var userId))
             return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidToken", "Invalid token claims."));
 
-        // Find matching session by refresh token
+        // Find matching session — enforce ALL security checks:
+        // 1. Correct user + refresh token
+        // 2. Not revoked
+        // 3. Refresh token not expired
+        // 4. Absolute session expiry not exceeded (prevents indefinite refresh)
+        var now = DateTime.UtcNow;
         var session = await _context.Set<UserSession>()
             .FirstOrDefaultAsync(s => s.UserId == userId
                 && s.RefreshToken == request.RefreshToken
                 && !s.IsRevoked
-                && s.RefreshTokenExpiry > DateTime.UtcNow);
+                && s.RefreshTokenExpiry > now
+                && s.ExpiresAt > now);
 
         if (session is null)
             return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidRefreshToken", "Invalid or expired refresh token."));
+
+        // SECURITY: Enforce tenant binding — session.TenantId must match the requested tenant
+        // This prevents token replay across tenants (manipulating X-Tenant-Id header)
+        var resolvedRequestedTenantId = await ResolveTenantIdAsync(tenantId);
+        if (resolvedRequestedTenantId is null || session.TenantId != resolvedRequestedTenantId.Value)
+        {
+            session.IsRevoked = true;
+            session.RevokedAt = now;
+            session.RevokedReason = "TenantMismatch";
+            await _context.SaveChangesAsync();
+
+            _logger.LogWarning("Refresh rejected for user {UserId}: tenant mismatch (session={SessionTenant}, requested={RequestedTenant})",
+                userId, session.TenantId, tenantId);
+            return Result.Failure<LoginResponse>(Error.Validation("Auth.TenantMismatch", "Session tenant does not match requested tenant."));
+        }
+
+        // SECURITY: Cross-check token's tenant_id claim against session tenant
+        var tokenTenantClaim = principal.FindFirst("tenant_id")?.Value;
+        if (tokenTenantClaim is not null)
+        {
+            var tokenTenantId = await ResolveTenantIdAsync(tokenTenantClaim);
+            if (tokenTenantId is null || tokenTenantId.Value != session.TenantId)
+            {
+                session.IsRevoked = true;
+                session.RevokedAt = now;
+                session.RevokedReason = "TokenTenantMismatch";
+                await _context.SaveChangesAsync();
+
+                _logger.LogWarning("Refresh rejected for user {UserId}: token tenant_id claim doesn't match session", userId);
+                return Result.Failure<LoginResponse>(Error.Validation("Auth.TenantMismatch", "Token tenant does not match session tenant."));
+            }
+        }
 
         // Load user with roles and permissions
         var user = await _context.Set<AppUser>()
@@ -226,7 +274,7 @@ public class AuthService : IAuthService
         if (user is null || !user.IsActive)
         {
             session.IsRevoked = true;
-            session.RevokedAt = DateTime.UtcNow;
+            session.RevokedAt = now;
             session.RevokedReason = "UserInactive";
             await _context.SaveChangesAsync();
             return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidRefreshToken", "User not found or inactive."));
@@ -237,7 +285,7 @@ public class AuthService : IAuthService
         if (securityStampClaim is not null && securityStampClaim != user.SecurityStamp)
         {
             session.IsRevoked = true;
-            session.RevokedAt = DateTime.UtcNow;
+            session.RevokedAt = now;
             session.RevokedReason = "SecurityStampChanged";
             await _context.SaveChangesAsync();
 
@@ -245,25 +293,30 @@ public class AuthService : IAuthService
             return Result.Failure<LoginResponse>(Error.Validation("Auth.SecurityStampChanged", "Security credentials have changed. Please log in again."));
         }
 
-        // Generate new tokens (token rotation)
+        // Generate new tokens (token rotation) — derive tenant from session, NOT from caller header
         var roles = user.UserRoles.Select(ur => ur.Role.Name).ToList();
         var permissions = user.UserRoles.SelectMany(ur => ur.Role.RolePermissions).Select(rp => rp.Permission.Code).Distinct().ToList();
 
-        var newAccessToken = _tokenService.GenerateAccessToken(user, roles, permissions, tenantId);
+        // Resolve tenant code from session's TenantId for the token claim
+        var sessionTenant = await _context.Set<Tenant>().FindAsync(session.TenantId);
+        var tenantCode = sessionTenant?.Code ?? tenantId;
+
+        var newJti = Guid.NewGuid().ToString();
+        var newAccessToken = _tokenService.GenerateAccessToken(user, roles, permissions, tenantCode, newJti);
         var newRefreshToken = _tokenService.GenerateRefreshToken();
 
-        // Update session with new tokens
+        // Update session with new tokens (refresh token expiry extends, but absolute ExpiresAt does NOT)
         session.RefreshToken = newRefreshToken;
-        session.RefreshTokenExpiry = DateTime.UtcNow.AddDays(_jwtSettings.RefreshTokenExpirationDays);
-        session.AccessTokenJti = Guid.NewGuid().ToString();
-        session.LastAccessedAt = DateTime.UtcNow;
+        session.RefreshTokenExpiry = now.AddDays(_jwtSettings.RefreshTokenExpirationDays);
+        session.AccessTokenJti = newJti;
+        session.LastAccessedAt = now;
 
         await _context.SaveChangesAsync();
 
         return Result.Success(new LoginResponse(
             AccessToken: newAccessToken,
             RefreshToken: newRefreshToken,
-            ExpiresAt: DateTime.UtcNow.AddMinutes(_jwtSettings.AccessTokenExpirationMinutes),
+            ExpiresAt: now.AddMinutes(_jwtSettings.AccessTokenExpirationMinutes),
             User: MapToDto(user, roles)));
     }
 
@@ -341,6 +394,23 @@ public class AuthService : IAuthService
 
         _logger.LogInformation("Password changed for user {UserId}. {SessionCount} sessions revoked.", userId, activeSessions.Count);
         return Result.Success();
+    }
+
+    /// <summary>
+    /// Resolves a tenant identifier (GUID string or Code) to the canonical Tenant.Id.
+    /// Returns null if the tenant doesn't exist.
+    /// </summary>
+    private async Task<Guid?> ResolveTenantIdAsync(string tenantIdOrCode)
+    {
+        if (Guid.TryParse(tenantIdOrCode, out var guid))
+        {
+            var exists = await _context.Set<Tenant>().AnyAsync(t => t.Id == guid);
+            return exists ? guid : null;
+        }
+
+        var tenant = await _context.Set<Tenant>()
+            .FirstOrDefaultAsync(t => t.Code == tenantIdOrCode);
+        return tenant?.Id;
     }
 
     private static UserDto MapToDto(AppUser user, IList<string> roles) => new(
