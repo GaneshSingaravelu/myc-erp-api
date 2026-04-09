@@ -4,6 +4,7 @@ using ERP.Identity.Entities;
 using ERP.Persistence.Context;
 using ERP.SharedKernel.Results;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -31,6 +32,7 @@ public class AuthService : IAuthService
 {
     private readonly MasterDbContext _context;
     private readonly ITokenService _tokenService;
+    private readonly IMemoryCache _cache;
     private readonly JwtSettings _jwtSettings;
     private readonly ILogger<AuthService> _logger;
 
@@ -38,14 +40,19 @@ public class AuthService : IAuthService
     private const int LockoutMinutes = 15;
     private const int PasswordHistoryCount = 5;
 
+    /// <summary>Cache key prefix — must match the key used in OnTokenValidated (IdentityServiceExtensions)</summary>
+    private const string JtiCacheKeyPrefix = "jti_valid:";
+
     public AuthService(
         MasterDbContext context,
         ITokenService tokenService,
+        IMemoryCache cache,
         IOptions<JwtSettings> jwtSettings,
         ILogger<AuthService> logger)
     {
         _context = context;
         _tokenService = tokenService;
+        _cache = cache;
         _jwtSettings = jwtSettings.Value;
         _logger = logger;
     }
@@ -240,6 +247,7 @@ public class AuthService : IAuthService
             session.RevokedAt = now;
             session.RevokedReason = "TenantMismatch";
             await _context.SaveChangesAsync();
+            InvalidateJtiCache(session.AccessTokenJti);
 
             _logger.LogWarning("Refresh rejected for user {UserId}: tenant mismatch (session={SessionTenant}, requested={RequestedTenant})",
                 userId, session.TenantId, tenantId);
@@ -257,6 +265,7 @@ public class AuthService : IAuthService
                 session.RevokedAt = now;
                 session.RevokedReason = "TokenTenantMismatch";
                 await _context.SaveChangesAsync();
+                InvalidateJtiCache(session.AccessTokenJti);
 
                 _logger.LogWarning("Refresh rejected for user {UserId}: token tenant_id claim doesn't match session", userId);
                 return Result.Failure<LoginResponse>(Error.Validation("Auth.TenantMismatch", "Token tenant does not match session tenant."));
@@ -277,6 +286,7 @@ public class AuthService : IAuthService
             session.RevokedAt = now;
             session.RevokedReason = "UserInactive";
             await _context.SaveChangesAsync();
+            InvalidateJtiCache(session.AccessTokenJti);
             return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidRefreshToken", "User not found or inactive."));
         }
 
@@ -288,6 +298,7 @@ public class AuthService : IAuthService
             session.RevokedAt = now;
             session.RevokedReason = "SecurityStampChanged";
             await _context.SaveChangesAsync();
+            InvalidateJtiCache(session.AccessTokenJti);
 
             _logger.LogWarning("Refresh rejected for user '{UserName}': SecurityStamp mismatch", user.UserName);
             return Result.Failure<LoginResponse>(Error.Validation("Auth.SecurityStampChanged", "Security credentials have changed. Please log in again."));
@@ -305,6 +316,9 @@ public class AuthService : IAuthService
         var newAccessToken = _tokenService.GenerateAccessToken(user, roles, permissions, tenantCode, newJti);
         var newRefreshToken = _tokenService.GenerateRefreshToken();
 
+        // Invalidate old JTI before rotating — the old access token should be rejected immediately
+        var oldJti = session.AccessTokenJti;
+
         // Update session with new tokens (refresh token expiry extends, but absolute ExpiresAt does NOT)
         session.RefreshToken = newRefreshToken;
         session.RefreshTokenExpiry = now.AddDays(_jwtSettings.RefreshTokenExpirationDays);
@@ -312,6 +326,7 @@ public class AuthService : IAuthService
         session.LastAccessedAt = now;
 
         await _context.SaveChangesAsync();
+        InvalidateJtiCache(oldJti);
 
         return Result.Success(new LoginResponse(
             AccessToken: newAccessToken,
@@ -335,6 +350,11 @@ public class AuthService : IAuthService
         session.RevokedReason = "Logout";
 
         await _context.SaveChangesAsync();
+
+        // Immediately invalidate the JTI cache so the access token is rejected on next request
+        // Without this, the token would remain valid for up to the cache TTL (2 min)
+        InvalidateJtiCache(session.AccessTokenJti);
+
         _logger.LogInformation("Session revoked for user {UserId}", userId);
 
         return Result.Success();
@@ -392,8 +412,25 @@ public class AuthService : IAuthService
 
         await _context.SaveChangesAsync();
 
+        // Immediately invalidate all JTI cache entries so access tokens are rejected on next request
+        foreach (var session in activeSessions)
+            InvalidateJtiCache(session.AccessTokenJti);
+
         _logger.LogInformation("Password changed for user {UserId}. {SessionCount} sessions revoked.", userId, activeSessions.Count);
         return Result.Success();
+    }
+
+    /// <summary>
+    /// Immediately removes a JTI from the validation cache so the corresponding access token
+    /// is rejected on the next request. Without this, revoked tokens would remain valid
+    /// for up to the cache TTL (2 minutes) — unacceptable for security-critical operations
+    /// like logout and password change.
+    ///
+    /// The cache key format must match OnTokenValidated in IdentityServiceExtensions.
+    /// </summary>
+    private void InvalidateJtiCache(string jti)
+    {
+        _cache.Remove($"{JtiCacheKeyPrefix}{jti}");
     }
 
     /// <summary>
