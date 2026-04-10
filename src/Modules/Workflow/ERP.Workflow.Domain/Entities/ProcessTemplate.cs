@@ -53,7 +53,7 @@ public class ProcessTemplate : AuditableEntity
     public int Version { get; private set; }
 
     /// <summary>Only one version can be active at a time per template name</summary>
-    public bool IsActive { get; private set; }
+    public new bool IsActive { get; private set; }
 
     /// <summary>The ordered list of steps in this process</summary>
     public IReadOnlyCollection<ProcessStep> Steps => _steps.AsReadOnly();

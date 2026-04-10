@@ -28,7 +28,8 @@ namespace ERP.Identity.Services;
 public interface ITokenService
 {
     /// <summary>Generate a JWT access token with user claims (id, email, roles, permissions)</summary>
-    string GenerateAccessToken(AppUser user, IList<string> roles, IList<string> permissions, string tenantId);
+    /// <param name="jti">Unique token ID — must match the UserSession.AccessTokenJti for revocation checks</param>
+    string GenerateAccessToken(AppUser user, IList<string> roles, IList<string> permissions, string tenantId, string jti);
 
     /// <summary>Generate a random refresh token</summary>
     string GenerateRefreshToken();

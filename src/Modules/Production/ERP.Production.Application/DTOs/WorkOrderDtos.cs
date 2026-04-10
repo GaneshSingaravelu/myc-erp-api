@@ -16,7 +16,7 @@ public record WorkOrderResponse(
     DateTime? ReleasedAt,
     DateTime? CompletedAt,
     DateTime CreatedAt,
-    string? CreatedBy,
+    Guid? CreatedBy,
     List<JobCardResponse> JobCards);
 
 public record WorkOrderListResponse(

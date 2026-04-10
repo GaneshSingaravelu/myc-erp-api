@@ -1,10 +1,16 @@
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
 using System.Text;
 using ERP.Identity.Configuration;
+using ERP.Identity.Entities;
 using ERP.Identity.Services;
 using ERP.Persistence.Context;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.Tokens;
 
 namespace ERP.Identity.Extensions;
@@ -53,9 +59,9 @@ public static class IdentityServiceExtensions
 
         services.Configure<JwtSettings>(configuration.GetSection(JwtSettings.SectionName));
 
-        // Register Identity entity configurations with AppDbContext
+        // Register Identity entity configurations with MasterDbContext
         // Without this, EF Core won't discover table mappings for Users, Roles, Permissions, etc.
-        AppDbContext.ConfigurationAssemblies.Add(typeof(IdentityServiceExtensions).Assembly);
+        MasterDbContext.ConfigurationAssemblies.Add(typeof(IdentityServiceExtensions).Assembly);
 
         // Register token service
         services.AddSingleton<ITokenService, TokenService>();
@@ -64,6 +70,8 @@ public static class IdentityServiceExtensions
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<IUserService, UserService>();
         services.AddScoped<IRoleService, RoleService>();
+        services.AddScoped<ITenantManagementService, TenantManagementService>();
+        services.AddScoped<IMenuService, MenuService>();
 
         // Configure JWT Bearer Authentication
         services.AddAuthentication(options =>
@@ -97,22 +105,72 @@ public static class IdentityServiceExtensions
                 ClockSkew = TimeSpan.Zero
             };
 
-            // Configure SignalR JWT authentication
-            // SignalR can't send headers, so it sends the token as a query parameter
+            // Configure JWT events for SignalR support and session-based revocation
             options.Events = new JwtBearerEvents
             {
+                // SignalR can't send headers, so it sends the token as a query parameter
                 OnMessageReceived = context =>
                 {
                     var accessToken = context.Request.Query["access_token"];
                     var path = context.HttpContext.Request.Path;
 
-                    // If the request is for a SignalR hub, read token from query string
                     if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs"))
                     {
                         context.Token = accessToken;
                     }
 
                     return Task.CompletedTask;
+                },
+
+                // REQUEST-TIME ACCESS TOKEN REVOCATION
+                // Validates the token's JTI against active sessions in the database.
+                // Without this, logout/revoke only invalidates refresh tokens —
+                // already-issued access tokens remain valid until natural expiry.
+                // Uses short-TTL cache (2 min) to avoid DB hit on every request.
+                OnTokenValidated = async context =>
+                {
+                    var jti = context.Principal?.FindFirst(JwtRegisteredClaimNames.Jti)?.Value;
+                    var userIdStr = context.Principal?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+
+                    if (jti is null || userIdStr is null || !Guid.TryParse(userIdStr, out var userId))
+                    {
+                        context.Fail("Token missing required claims.");
+                        return;
+                    }
+
+                    var cache = context.HttpContext.RequestServices.GetRequiredService<IMemoryCache>();
+                    var cacheKey = $"jti_valid:{jti}";
+
+                    // Check cache first — avoid DB roundtrip on every request
+                    if (cache.TryGetValue(cacheKey, out bool isValid))
+                    {
+                        if (!isValid)
+                        {
+                            context.Fail("Token has been revoked.");
+                        }
+                        return;
+                    }
+
+                    // Cache miss — check session in database
+                    var dbContext = context.HttpContext.RequestServices.GetRequiredService<MasterDbContext>();
+                    var now = DateTime.UtcNow;
+
+                    var sessionExists = await dbContext.Set<UserSession>()
+                        .AnyAsync(s => s.UserId == userId
+                            && s.AccessTokenJti == jti
+                            && !s.IsRevoked
+                            && s.ExpiresAt > now);
+
+                    // Cache result for 2 minutes — balances security vs performance
+                    // On revocation, the max window of continued access is 2 minutes
+                    cache.Set(cacheKey, sessionExists, TimeSpan.FromMinutes(2));
+
+                    if (!sessionExists)
+                    {
+                        var logger = context.HttpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("ERP.Identity.JtiValidation");
+                        logger?.LogWarning("Access denied: JTI {Jti} for user {UserId} has no active session", jti, userId);
+                        context.Fail("Token has been revoked.");
+                    }
                 }
             };
         });

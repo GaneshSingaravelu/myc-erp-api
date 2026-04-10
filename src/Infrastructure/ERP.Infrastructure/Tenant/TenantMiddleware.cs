@@ -133,13 +133,37 @@ public class TenantMiddleware
             return;
         }
 
-        // Step 4: Store tenant info in HttpContext.Items for downstream use
-        // HttpContext.Items is a dictionary available throughout the request pipeline
+        // Step 4: SECURITY — Cross-check tenant header against JWT tenant_id claim
+        // If the user is authenticated, their token contains a tenant_id claim set at login.
+        // The X-Tenant-Id header MUST match. This prevents authenticated users from
+        // pivoting to a different tenant's data by simply changing the header.
+        if (context.User.Identity?.IsAuthenticated == true)
+        {
+            var tokenTenantId = context.User.FindFirst("tenant_id")?.Value;
+            if (tokenTenantId is not null
+                && !string.Equals(tokenTenantId, tenantIdentifier.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning(
+                    "SECURITY: Tenant mismatch — header={HeaderTenant}, token={TokenTenant}, user={User}, IP={IP}",
+                    tenantIdentifier, tokenTenantId,
+                    context.User.Identity.Name, context.Connection.RemoteIpAddress);
+
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                await context.Response.WriteAsJsonAsync(new
+                {
+                    error = "Tenant context mismatch. The X-Tenant-Id header does not match your authentication context.",
+                    code = "TENANT_MISMATCH"
+                });
+                return;
+            }
+        }
+
+        // Step 5: Store tenant info in HttpContext.Items for downstream use
         context.Items["CurrentTenant"] = tenant;
 
         _logger.LogDebug("Resolved tenant: {TenantName} ({TenantId})", tenant.Name, tenant.Identifier);
 
-        // Step 5: Call the next middleware in the pipeline
+        // Step 6: Call the next middleware in the pipeline
         await _next(context);
     }
 
@@ -151,6 +175,7 @@ public class TenantMiddleware
         return path.StartsWith("/health")
             || path.StartsWith("/swagger")
             || path.StartsWith("/api/v1/auth/login")
+            || path.StartsWith("/api/v1/tenants")
             || path.StartsWith("/hubs/");
     }
 }

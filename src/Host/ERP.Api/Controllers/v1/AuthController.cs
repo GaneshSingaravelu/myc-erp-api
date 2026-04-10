@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using ERP.Identity.DTOs;
 using ERP.Identity.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -6,7 +7,7 @@ using Microsoft.AspNetCore.Mvc;
 namespace ERP.Api.Controllers.v1;
 
 /// <summary>
-/// AUTH CONTROLLER — Login, Register, Refresh Token endpoints.
+/// AUTH CONTROLLER — Login, Register, Refresh, Logout, Change Password.
 ///
 /// CONTROLLER DESIGN (Interview Concept):
 /// ========================================
@@ -32,7 +33,7 @@ public class AuthController : ControllerBase
 
     /// <summary>
     /// POST /api/v1/auth/login
-    /// Authenticates a user and returns JWT tokens.
+    /// Authenticates a user and returns JWT tokens + creates a session.
     /// </summary>
     [HttpPost("login")]
     [AllowAnonymous]
@@ -41,16 +42,20 @@ public class AuthController : ControllerBase
         var result = await _authService.LoginAsync(request, tenantId ?? "default");
 
         if (result.IsFailure)
-            return result.Error.Code == "Auth.InvalidCredentials"
-                ? Unauthorized(new { error = result.Error.Message })
-                : BadRequest(new { error = result.Error.Message });
+            return result.Error.Code switch
+            {
+                "Auth.InvalidCredentials" => Unauthorized(new { error = result.Error.Message }),
+                "Auth.AccountLocked" => StatusCode(423, new { error = result.Error.Message }),
+                "Auth.AccountInactive" => StatusCode(403, new { error = result.Error.Message }),
+                _ => BadRequest(new { error = result.Error.Message })
+            };
 
         return Ok(result.Value);
     }
 
     /// <summary>
     /// POST /api/v1/auth/register
-    /// Creates a new user account.
+    /// Creates a new user account (Admin only).
     /// </summary>
     [HttpPost("register")]
     [Authorize(Roles = "Admin")]
@@ -67,6 +72,7 @@ public class AuthController : ControllerBase
     /// <summary>
     /// POST /api/v1/auth/refresh
     /// Exchange expired access token + valid refresh token for new tokens.
+    /// Validates SecurityStamp — rejected if password/security changed.
     /// </summary>
     [HttpPost("refresh")]
     [AllowAnonymous]
@@ -78,5 +84,53 @@ public class AuthController : ControllerBase
             return Unauthorized(new { error = result.Error.Message });
 
         return Ok(result.Value);
+    }
+
+    /// <summary>
+    /// POST /api/v1/auth/logout
+    /// Revokes the current session (specific refresh token).
+    /// </summary>
+    [HttpPost("logout")]
+    [Authorize]
+    public async Task<IActionResult> Logout([FromBody] LogoutRequest request)
+    {
+        var userId = GetCurrentUserId();
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _authService.LogoutAsync(userId.Value, request.RefreshToken);
+        return result.IsSuccess ? NoContent() : BadRequest(new { error = result.Error.Message });
+    }
+
+    /// <summary>
+    /// POST /api/v1/auth/change-password
+    /// Changes the user's password. Revokes all active sessions (force re-login).
+    /// Checks password history (last 5 passwords cannot be reused).
+    /// </summary>
+    [HttpPost("change-password")]
+    [Authorize]
+    public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordRequest request)
+    {
+        var userId = GetCurrentUserId();
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _authService.ChangePasswordAsync(userId.Value, request.CurrentPassword, request.NewPassword);
+
+        if (result.IsFailure)
+            return result.Error.Code switch
+            {
+                "Auth.InvalidPassword" => BadRequest(new { error = result.Error.Message }),
+                "Auth.PasswordReused" => BadRequest(new { error = result.Error.Message }),
+                _ => BadRequest(new { error = result.Error.Message })
+            };
+
+        return Ok(new { message = "Password changed successfully. All sessions have been revoked. Please log in again." });
+    }
+
+    private Guid? GetCurrentUserId()
+    {
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        return Guid.TryParse(userIdClaim, out var userId) ? userId : null;
     }
 }

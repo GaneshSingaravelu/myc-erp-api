@@ -8,6 +8,7 @@
     <ProjectReference Include="..\..\Core\ERP.SharedKernel\ERP.SharedKernel.csproj" />
     <ProjectReference Include="..\..\Core\ERP.Application.Abstractions\ERP.Application.Abstractions.csproj" />
     <ProjectReference Include="..\ERP.Persistence\ERP.Persistence.csproj" />
+    <ProjectReference Include="..\ERP.Identity\ERP.Identity.csproj" />
     <ProjectReference Include="..\ERP.Persistence.SqlServer\ERP.Persistence.SqlServer.csproj" />
     <ProjectReference Include="..\ERP.Persistence.PostgreSql\ERP.Persistence.PostgreSql.csproj" />
   </ItemGroup>

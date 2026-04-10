@@ -8,9 +8,9 @@ namespace ERP.Identity.Services;
 
 public class RoleService : IRoleService
 {
-    private readonly AppDbContext _context;
+    private readonly MasterDbContext _context;
 
-    public RoleService(AppDbContext context)
+    public RoleService(MasterDbContext context)
     {
         _context = context;
     }
@@ -118,8 +118,8 @@ public class RoleService : IRoleService
     public async Task<Result<IReadOnlyList<PermissionDto>>> GetAllPermissionsAsync()
     {
         var permissions = await _context.Set<Permission>()
-            .OrderBy(p => p.Module).ThenBy(p => p.Code)
-            .Select(p => new PermissionDto(p.Id, p.Code, p.Name, p.Module))
+            .OrderBy(p => p.Category).ThenBy(p => p.Code)
+            .Select(p => new PermissionDto(p.Id, p.Code, p.Name, p.Category))
             .ToListAsync();
 
         return Result.Success<IReadOnlyList<PermissionDto>>(permissions);
@@ -131,6 +131,6 @@ public class RoleService : IRoleService
         Description: role.Description,
         IsSystemRole: role.IsSystemRole,
         Permissions: role.RolePermissions
-            .Select(rp => new PermissionDto(rp.Permission.Id, rp.Permission.Code, rp.Permission.Name, rp.Permission.Module))
+            .Select(rp => new PermissionDto(rp.Permission.Id, rp.Permission.Code, rp.Permission.Name, rp.Permission.Category))
             .ToList());
 }

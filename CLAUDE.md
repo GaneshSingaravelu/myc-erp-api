@@ -39,7 +39,9 @@ ERP.slnx                              ← .NET 10 SDK format (builds net8.0 targ
 │   └── ERP.DbMigrator/              ← Console app for applying migrations
 └── docs/
     ├── DESIGN_PATTERNS.md            ← 20 patterns explained with interview tips
-    └── ARCHITECTURE.md               ← 20 concepts explained with code examples
+    ├── ARCHITECTURE.md               ← 20 concepts explained with code examples
+    ├── DATABASE_ARCHITECTURE.md      ← Complete table definitions, relationships, data flow
+    └── TENANT_PROVISIONING.md        ← How to create & migrate tenants (manual + API)
 ```
 
 ## Architecture Decisions (ADRs)
@@ -53,12 +55,18 @@ ERP.slnx                              ← .NET 10 SDK format (builds net8.0 targ
 ### 2. Multi-Tenancy: Custom (NOT Finbuckle)
 - **Decision:** Custom tenant middleware + TenantDbContextFactory
 - **Reason:** Need multi-provider switching (SQL Server/PostgreSQL per tenant), full control, fresher-friendly
+- **Architecture:** Master DB (ERP_Master) + Per-Tenant DBs (ERP_{TenantCode})
+  - **Master DB:** Tenants, Users, UserTenants, UserSessions, Roles, Permissions, UserRoles, RolePermissions, Modules, Menus, MenuPermissions, FeatureFlags, TenantFeatureFlags, IdentityAuditLogs, UserPasswordHistory
+  - **Tenant DB:** Plants, UserPlantAccess, UserPreferences, ProcessTemplates, ProcessSteps, WorkOrders, JobCards, AuditLogs
+  - **Two DbContexts:** MasterDbContext (identity/access) + AppDbContext (business data per tenant)
 - **How it works:**
-  1. `TenantMiddleware` reads `X-Tenant-Id` header, looks up tenant in store (cached), stores in `HttpContext.Items`
+  1. `TenantMiddleware` reads `X-Tenant-Id` header, looks up tenant in MasterDbContext (cached), stores in `HttpContext.Items`
   2. `HttpContextTenantProvider` reads tenant from HttpContext
   3. `TenantDbContextFactory` creates AppDbContext with correct provider and connection string
-  4. Tenant store is currently config-based (`ConfigurationTenantStore` reads from appsettings.json)
-  5. Will be replaced with EF Core-based master DB store later
+  4. Auth service queries MasterDbContext for user/roles/permissions
+  5. Business handlers query AppDbContext (tenant-specific database)
+- **Tenant provisioning:** Admin API creates DB, runs migrations, seeds admin user automatically
+- **Cross-DB references:** UserPlantAccess.UserId → Master.Users validated in app code (no FK constraint — SQL Server doesn't support cross-DB FKs)
 
 ### 3. Multi-Database Provider
 - **Shared:** `ERP.Persistence` has AppDbContext, entity configurations, Repository<T>, UnitOfWork
@@ -87,14 +95,20 @@ ERP.slnx                              ← .NET 10 SDK format (builds net8.0 targ
 ### 7. Authentication: JWT (Custom, NOT ASP.NET Core Identity)
 - Custom AppUser/AppRole/Permission entities in ERP.Identity
 - BCrypt password hashing
-- Access token (60 min) + Refresh token (7 days)
-- Permissions: hybrid RBAC + permission-based (role → permissions, check at permission level)
-- Permission naming: `{module}.{action}` (e.g., `jobcard.create`, `qa.approve`)
+- Access token (60 min) + Refresh token (7 days) via UserSessions table (multi-device)
+- Account lockout: 5 failed attempts → 15 min lock (IsLocked, LockoutEnd, AccessFailedCount)
+- SecurityStamp: random GUID, changes on password/security change, invalidates all sessions
+- Password history: last 5 hashes checked on change (UserPasswordHistory table)
+- Permissions: hybrid RBAC + ABAC-ready (RolePermissions.ConditionJson for future)
+- Permission naming: `CATEGORY_ACTION` (e.g., `JOBCARD_CREATE`, `QA_APPROVE`)
+- Roles are per-tenant: same user can be Admin in Tenant A, Viewer in Tenant B
+- System roles (TenantId=NULL): Admin, Production Operator, QA Inspector, Viewer
+- Dynamic menus: API-driven sidebar, filtered by user permissions + tenant feature flags
 
 ## Key Conventions
 
 ### Coding
-- All entities inherit `AuditableEntity` (CreatedAt/By, ModifiedAt/By, soft delete)
+- All entities inherit `AuditableEntity` (CreatedAt/By, ModifiedAt/By, IsActive, IsDeleted/DeletedAt/DeletedBy)
 - Use `Result<T>` for business operations (not exceptions)
 - Use FluentValidation for command validation (auto-run via ValidationBehavior)
 - Use `Guard.Against*` for constructor validation
@@ -108,8 +122,8 @@ ERP.slnx                              ← .NET 10 SDK format (builds net8.0 targ
 - Pipeline: Request → ValidationBehavior → LoggingBehavior → Handler
 
 ### DI Lifetimes
-- **Singleton:** ICacheService, ITenantStore, ITokenService
-- **Scoped:** AppDbContext, IRepository<T>, IUnitOfWork, ITenantProvider, ICurrentUserService
+- **Singleton:** ICacheService, ITokenService
+- **Scoped:** MasterDbContext, AppDbContext, IRepository<T>, IUnitOfWork, ITenantProvider, ITenantStore, ICurrentUserService, ITenantManagementService, ITenantProvisioningService
 - **Transient:** (not used currently)
 
 ### Project References (Dependency Rule)
@@ -156,7 +170,14 @@ dotnet test ERP.slnx
 
 - [x] Phase 0: Solution structure, SharedKernel, Persistence, Infrastructure, Identity, Notifications, API Host
 - [x] Phase 1: Identity APIs (login, register, role/permission management) + Workflow engine (ProcessTemplate, ProcessStep CRUD)
-- [~] Phase 2: Production module — WorkOrder & JobCard entities, CRUD commands/queries, controllers (IN PROGRESS, uncommitted)
+- [x] Phase 2: Production module — WorkOrder & JobCard entities, CRUD commands/queries, controllers
+- [x] Phase 2.5A: Master DB architecture (MasterDbContext, redesigned identity entities, DesignTimeDbContextFactories)
+- [x] Phase 2.5B: Tenant provisioning API (TenantsController, TenantManagementService, TenantProvisioningService, MasterDbTenantStore)
+- [x] Phase 2.5C: Refactor auth flow for Master DB (sessions, lockout, password history, SecurityStamp, logout)
+- [x] Phase 2.5D: Dynamic menu API (permission-filtered sidebar)
+- [x] Phase 2.5E: Tenant DB additions (Plants, UserPlantAccess, UserPreferences, AuditLogs)
+- [x] Phase 2.5F: API smoke testing (all auth/authz/multi-tenant scenarios)
+- [ ] Phase 2.5G: Angular integration (auth service, interceptor, sidebar, permission directive)
 - [ ] Phase 3: SignalR integration (job card status, QA alerts)
 - [ ] Phase 4: Reporting (open-source, Angular-compatible)
 - [ ] Phase 5: Additional modules (Finance, Sales, HR — process templates)

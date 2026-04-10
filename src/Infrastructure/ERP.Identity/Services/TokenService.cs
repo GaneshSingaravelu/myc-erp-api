@@ -45,16 +45,20 @@ public class TokenService : ITokenService
         AppUser user,
         IList<string> roles,
         IList<string> permissions,
-        string tenantId)
+        string tenantId,
+        string jti)
     {
         // Step 1: Create claims (data stored in the token)
+        // JTI is provided by the caller so it matches the UserSession.AccessTokenJti
+        // This enables request-time revocation by checking jti against active sessions
         var claims = new List<Claim>
         {
             new(ClaimTypes.NameIdentifier, user.Id.ToString()),
             new(ClaimTypes.Name, user.UserName),
             new(ClaimTypes.Email, user.Email),
             new("tenant_id", tenantId),
-            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()) // Unique token ID
+            new("security_stamp", user.SecurityStamp),
+            new(JwtRegisteredClaimNames.Jti, jti)
         };
 
         // Add role claims (a user can have multiple roles)

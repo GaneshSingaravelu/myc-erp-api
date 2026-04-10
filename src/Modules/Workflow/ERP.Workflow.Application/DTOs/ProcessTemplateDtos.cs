@@ -30,7 +30,7 @@ public record ProcessTemplateResponse(
     int Version,
     bool IsActive,
     DateTime CreatedAt,
-    string? CreatedBy,
+    Guid? CreatedBy,
     List<ProcessStepResponse> Steps);
 
 public record ProcessTemplateListResponse(

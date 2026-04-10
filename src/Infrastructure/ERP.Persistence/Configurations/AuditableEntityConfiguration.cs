@@ -5,40 +5,24 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 namespace ERP.Persistence.Configurations;
 
 /// <summary>
-/// ENTITY CONFIGURATION — Defines how AuditableEntity properties map to database columns.
+/// ENTITY CONFIGURATION — Base configuration for all AuditableEntity types.
 ///
-/// WHAT IS IEntityTypeConfiguration? (Interview Question!)
-/// =========================================================
-/// Instead of using Data Annotations ([Table], [Column], [Required]) on your entities,
-/// we use Fluent API in separate configuration classes.
+/// Configures: PK, audit columns (CreatedBy/ModifiedBy/DeletedBy as GUID),
+/// IsActive, soft delete index, and ignores the DomainEvents collection.
 ///
-/// WHY FLUENT API OVER ANNOTATIONS?
-/// ==================================
-/// 1. Keeps domain entities CLEAN — no database attributes polluting business classes
-/// 2. More powerful — can do things annotations can't (owned types, complex indexes)
-/// 3. One place for all DB mapping — easy to review and maintain
-/// 4. Follows Clean Architecture — domain layer has ZERO database knowledge
-///
-/// HOW IT'S APPLIED:
-/// ==================
-/// In AppDbContext.OnModelCreating():
-///   modelBuilder.ApplyConfigurationsFromAssembly(...)
-/// This automatically discovers ALL IEntityTypeConfiguration classes and applies them.
+/// Each entity overrides ConfigureEntity() to add entity-specific mappings.
 /// </summary>
 public abstract class AuditableEntityConfiguration<T> : IEntityTypeConfiguration<T>
     where T : AuditableEntity
 {
     public void Configure(EntityTypeBuilder<T> builder)
     {
-        // Base entity properties
+        // Primary key — app-generated GUID
         builder.HasKey(e => e.Id);
-        builder.Property(e => e.Id).ValueGeneratedNever(); // We generate GUIDs in code, not DB
+        builder.Property(e => e.Id).ValueGeneratedNever();
 
-        // Audit columns
+        // Audit columns (CreatedBy/ModifiedBy/DeletedBy are now GUIDs referencing Users)
         builder.Property(e => e.CreatedAt).IsRequired();
-        builder.Property(e => e.CreatedBy).HasMaxLength(100);
-        builder.Property(e => e.LastModifiedBy).HasMaxLength(100);
-        builder.Property(e => e.DeletedBy).HasMaxLength(100);
 
         // Soft delete index — queries filtering by IsDeleted will be fast
         builder.HasIndex(e => e.IsDeleted);

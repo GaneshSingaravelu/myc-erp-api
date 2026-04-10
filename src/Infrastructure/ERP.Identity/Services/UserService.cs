@@ -8,9 +8,9 @@ namespace ERP.Identity.Services;
 
 public class UserService : IUserService
 {
-    private readonly AppDbContext _context;
+    private readonly MasterDbContext _context;
 
-    public UserService(AppDbContext context)
+    public UserService(MasterDbContext context)
     {
         _context = context;
     }
@@ -39,16 +39,21 @@ public class UserService : IUserService
 
     public async Task<Result<UserDto>> CreateAsync(CreateUserRequest request)
     {
-        if (await _context.Set<AppUser>().AnyAsync(u => u.UserName == request.UserName))
+        var normalizedUserName = request.UserName.ToUpperInvariant();
+        var normalizedEmail = request.Email.ToUpperInvariant();
+
+        if (await _context.Set<AppUser>().AnyAsync(u => u.NormalizedUserName == normalizedUserName))
             return Result.Failure<UserDto>(Error.Conflict("User.UserNameExists", $"Username '{request.UserName}' already exists."));
 
-        if (await _context.Set<AppUser>().AnyAsync(u => u.Email == request.Email))
+        if (await _context.Set<AppUser>().AnyAsync(u => u.NormalizedEmail == normalizedEmail))
             return Result.Failure<UserDto>(Error.Conflict("User.EmailExists", $"Email '{request.Email}' already exists."));
 
         var user = new AppUser
         {
             UserName = request.UserName,
+            NormalizedUserName = normalizedUserName,
             Email = request.Email,
+            NormalizedEmail = normalizedEmail,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.Password),
             FirstName = request.FirstName,
             LastName = request.LastName,
@@ -71,6 +76,7 @@ public class UserService : IUserService
             return Result.Failure<UserDto>(Error.NotFound("User", id));
 
         user.Email = request.Email;
+        user.NormalizedEmail = request.Email.ToUpperInvariant();
         user.FirstName = request.FirstName;
         user.LastName = request.LastName;
         user.IsActive = request.IsActive;

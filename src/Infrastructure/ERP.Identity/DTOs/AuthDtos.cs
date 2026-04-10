@@ -47,6 +47,16 @@ public record RegisterRequest(
 public record RefreshTokenRequest(string AccessToken, string RefreshToken);
 
 // ──────────────────────────────────────────────────────
+// LOGOUT
+// ──────────────────────────────────────────────────────
+public record LogoutRequest(string RefreshToken);
+
+// ──────────────────────────────────────────────────────
+// CHANGE PASSWORD
+// ──────────────────────────────────────────────────────
+public record ChangePasswordRequest(string CurrentPassword, string NewPassword);
+
+// ──────────────────────────────────────────────────────
 // USER DTOs
 // ──────────────────────────────────────────────────────
 public record UserDto(
@@ -92,4 +102,4 @@ public record AssignPermissionsRequest(IList<Guid> PermissionIds);
 // ──────────────────────────────────────────────────────
 // PERMISSION DTOs
 // ──────────────────────────────────────────────────────
-public record PermissionDto(Guid Id, string Code, string Name, string Module);
+public record PermissionDto(Guid Id, string Code, string Name, string Category);
