@@ -133,6 +133,22 @@ public class AuthService_LoginTests : AuthServiceTestBase
     // ─── Tenant Resolution ───
 
     [Fact]
+    public async Task Login_WhenTenantGuidNotFound_ReturnsInvalidTenant()
+    {
+        var user = CreateTestUser();
+        await Context.Set<AppUser>().AddAsync(user);
+        await Context.SaveChangesAsync();
+
+        var request = new LoginRequest(user.UserName, "Password@123");
+
+        // Pass a valid GUID format but no matching Tenant in DB
+        var result = await Sut.LoginAsync(request, Guid.NewGuid().ToString());
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Auth.InvalidTenant", result.Error.Code);
+    }
+
+    [Fact]
     public async Task Login_WhenTenantCodeNotFound_ReturnsInvalidTenant()
     {
         var user = CreateTestUser();

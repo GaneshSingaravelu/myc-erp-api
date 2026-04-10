@@ -35,17 +35,24 @@ public abstract class AuthServiceTestBase : IDisposable
         RefreshTokenExpirationDays = 7
     };
 
+    /// <summary>
+    /// One-time, thread-safe registration of Identity entity configurations.
+    /// CLR guarantees static constructors run exactly once, even under parallel xUnit execution.
+    /// This eliminates the race condition on MasterDbContext.ConfigurationAssemblies (shared static List).
+    /// </summary>
+    static AuthServiceTestBase()
+    {
+        var identityAssembly = typeof(AppUser).Assembly;
+        if (!MasterDbContext.ConfigurationAssemblies.Contains(identityAssembly))
+            MasterDbContext.ConfigurationAssemblies.Add(identityAssembly);
+    }
+
     protected AuthServiceTestBase()
     {
         // Each test gets its own InMemory DB (unique name prevents cross-test leakage)
         var options = new DbContextOptionsBuilder<MasterDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
-
-        // Register Identity entity configurations so MasterDbContext knows about the entities
-        var identityAssembly = typeof(AppUser).Assembly;
-        if (!MasterDbContext.ConfigurationAssemblies.Contains(identityAssembly))
-            MasterDbContext.ConfigurationAssemblies.Add(identityAssembly);
 
         Context = new MasterDbContext(options);
 
