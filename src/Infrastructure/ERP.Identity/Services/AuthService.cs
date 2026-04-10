@@ -125,9 +125,18 @@ public class AuthService : IAuthService
             .ToList();
 
         // Step 5: Resolve tenant — look up by identifier string or GUID
+        // SECURITY: Both paths validate tenant existence in the database.
+        // Without the GUID path check, an attacker could create sessions
+        // for non-existent tenants by passing arbitrary GUIDs.
         Guid resolvedTenantId;
         if (Guid.TryParse(tenantId, out var tid))
         {
+            var tenantExists = await _context.Set<Tenant>().AnyAsync(t => t.Id == tid);
+            if (!tenantExists)
+            {
+                _logger.LogWarning("Login failed: tenant GUID '{TenantId}' not found", tenantId);
+                return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidTenant", "Tenant not found."));
+            }
             resolvedTenantId = tid;
         }
         else

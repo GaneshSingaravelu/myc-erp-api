@@ -1,0 +1,390 @@
+using System.Security.Claims;
+using ERP.Identity.DTOs;
+using ERP.Identity.Entities;
+using Microsoft.EntityFrameworkCore;
+using Moq;
+
+namespace ERP.UnitTests.Identity;
+
+/// <summary>
+/// Unit tests for AuthService.RefreshTokenAsync — the most complex method.
+/// Covers token parsing, session lookup, tenant binding, SecurityStamp validation,
+/// token rotation, and JTI cache invalidation.
+/// </summary>
+public class AuthService_RefreshTokenTests : AuthServiceTestBase
+{
+    // ─── Token Parsing Failures ───
+
+    [Fact]
+    public async Task Refresh_WhenTokenInvalid_ReturnsInvalidToken()
+    {
+        TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
+            .Returns((ClaimsPrincipal?)null);
+
+        var request = new RefreshTokenRequest("bad-token", "some-refresh");
+
+        var result = await Sut.RefreshTokenAsync(request, "ABC");
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Auth.InvalidToken", result.Error.Code);
+    }
+
+    [Fact]
+    public async Task Refresh_WhenUserIdClaimMissing_ReturnsInvalidToken()
+    {
+        // Principal with no NameIdentifier claim
+        var principal = new ClaimsPrincipal(new ClaimsIdentity([], "Test"));
+        TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
+            .Returns(principal);
+
+        var request = new RefreshTokenRequest("expired-token", "some-refresh");
+
+        var result = await Sut.RefreshTokenAsync(request, "ABC");
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Auth.InvalidToken", result.Error.Code);
+    }
+
+    [Fact]
+    public async Task Refresh_WhenUserIdClaimNotGuid_ReturnsInvalidToken()
+    {
+        var claims = new List<Claim> { new(ClaimTypes.NameIdentifier, "not-a-guid") };
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test"));
+        TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
+            .Returns(principal);
+
+        var request = new RefreshTokenRequest("expired-token", "some-refresh");
+
+        var result = await Sut.RefreshTokenAsync(request, "ABC");
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Auth.InvalidToken", result.Error.Code);
+    }
+
+    // ─── Session Not Found ───
+
+    [Fact]
+    public async Task Refresh_WhenSessionNotFound_ReturnsInvalidRefreshToken()
+    {
+        var userId = Guid.NewGuid();
+        var principal = CreatePrincipal(userId);
+        TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
+            .Returns(principal);
+
+        var request = new RefreshTokenRequest("expired-token", "wrong-refresh-token");
+
+        var result = await Sut.RefreshTokenAsync(request, Guid.NewGuid().ToString());
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Auth.InvalidRefreshToken", result.Error.Code);
+    }
+
+    [Fact]
+    public async Task Refresh_WhenSessionRevoked_ReturnsInvalidRefreshToken()
+    {
+        var (user, tenant, _, _) = await SeedUserWithRoleAsync();
+        var session = CreateTestSession(user.Id, tenant.Id, "my-refresh", isRevoked: true);
+        await Context.Set<UserSession>().AddAsync(session);
+        await Context.SaveChangesAsync();
+
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
+            .Returns(principal);
+
+        var request = new RefreshTokenRequest("expired-token", "my-refresh");
+
+        var result = await Sut.RefreshTokenAsync(request, tenant.Code);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Auth.InvalidRefreshToken", result.Error.Code);
+    }
+
+    [Fact]
+    public async Task Refresh_WhenRefreshTokenExpired_ReturnsInvalidRefreshToken()
+    {
+        var (user, tenant, _, _) = await SeedUserWithRoleAsync();
+        var session = CreateTestSession(user.Id, tenant.Id, "my-refresh",
+            refreshTokenExpiry: DateTime.UtcNow.AddDays(-1)); // Expired yesterday
+        await Context.Set<UserSession>().AddAsync(session);
+        await Context.SaveChangesAsync();
+
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
+            .Returns(principal);
+
+        var request = new RefreshTokenRequest("expired-token", "my-refresh");
+
+        var result = await Sut.RefreshTokenAsync(request, tenant.Code);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Auth.InvalidRefreshToken", result.Error.Code);
+    }
+
+    [Fact]
+    public async Task Refresh_WhenAbsoluteSessionExpired_ReturnsInvalidRefreshToken()
+    {
+        var (user, tenant, _, _) = await SeedUserWithRoleAsync();
+        var session = CreateTestSession(user.Id, tenant.Id, "my-refresh",
+            expiresAt: DateTime.UtcNow.AddDays(-1)); // Absolute expiry passed
+        await Context.Set<UserSession>().AddAsync(session);
+        await Context.SaveChangesAsync();
+
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
+            .Returns(principal);
+
+        var request = new RefreshTokenRequest("expired-token", "my-refresh");
+
+        var result = await Sut.RefreshTokenAsync(request, tenant.Code);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Auth.InvalidRefreshToken", result.Error.Code);
+    }
+
+    // ─── Tenant Binding ───
+
+    [Fact]
+    public async Task Refresh_WhenTenantMismatch_RevokesSessionAndReturnsError()
+    {
+        var (user, tenant, _, _) = await SeedUserWithRoleAsync();
+        var otherTenant = CreateTestTenant("XYZ");
+        await Context.Set<Tenant>().AddAsync(otherTenant);
+        await Context.SaveChangesAsync();
+
+        var session = CreateTestSession(user.Id, tenant.Id, "my-refresh", jti: "test-jti");
+        await Context.Set<UserSession>().AddAsync(session);
+        await Context.SaveChangesAsync();
+
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
+            .Returns(principal);
+
+        // Request refresh with DIFFERENT tenant
+        var request = new RefreshTokenRequest("expired-token", "my-refresh");
+        var result = await Sut.RefreshTokenAsync(request, otherTenant.Code);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Auth.TenantMismatch", result.Error.Code);
+
+        // Session must be revoked
+        var updatedSession = await Context.Set<UserSession>().FindAsync(session.Id);
+        Assert.True(updatedSession!.IsRevoked);
+        Assert.Equal("TenantMismatch", updatedSession.RevokedReason);
+
+        // JTI cache must be invalidated
+        CacheMock.Verify(c => c.Remove("jti_valid:test-jti"), Times.Once);
+    }
+
+    [Fact]
+    public async Task Refresh_WhenRequestedTenantNotExists_RevokesSession()
+    {
+        var (user, tenant, _, _) = await SeedUserWithRoleAsync();
+        var session = CreateTestSession(user.Id, tenant.Id, "my-refresh", jti: "test-jti");
+        await Context.Set<UserSession>().AddAsync(session);
+        await Context.SaveChangesAsync();
+
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
+            .Returns(principal);
+
+        // Nonexistent tenant code
+        var request = new RefreshTokenRequest("expired-token", "my-refresh");
+        var result = await Sut.RefreshTokenAsync(request, "NONEXISTENT");
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Auth.TenantMismatch", result.Error.Code);
+    }
+
+    [Fact]
+    public async Task Refresh_WhenTokenTenantClaimMismatch_RevokesSession()
+    {
+        var (user, tenant, _, _) = await SeedUserWithRoleAsync();
+        var otherTenant = CreateTestTenant("XYZ");
+        await Context.Set<Tenant>().AddAsync(otherTenant);
+        await Context.SaveChangesAsync();
+
+        var session = CreateTestSession(user.Id, tenant.Id, "my-refresh", jti: "test-jti");
+        await Context.Set<UserSession>().AddAsync(session);
+        await Context.SaveChangesAsync();
+
+        // Token's tenant_id claim points to a DIFFERENT tenant than the session
+        var principal = CreatePrincipal(user.Id, tenantClaim: otherTenant.Code, securityStamp: user.SecurityStamp);
+        TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
+            .Returns(principal);
+
+        var request = new RefreshTokenRequest("expired-token", "my-refresh");
+        var result = await Sut.RefreshTokenAsync(request, tenant.Code);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Auth.TenantMismatch", result.Error.Code);
+
+        var updatedSession = await Context.Set<UserSession>().FindAsync(session.Id);
+        Assert.True(updatedSession!.IsRevoked);
+        Assert.Equal("TokenTenantMismatch", updatedSession.RevokedReason);
+    }
+
+    // ─── User Validation ───
+
+    [Fact]
+    public async Task Refresh_WhenUserInactive_RevokesSessionAndReturnsError()
+    {
+        var (user, tenant, _, _) = await SeedUserWithRoleAsync();
+        var session = CreateTestSession(user.Id, tenant.Id, "my-refresh", jti: "test-jti");
+        await Context.Set<UserSession>().AddAsync(session);
+        await Context.SaveChangesAsync();
+
+        // Deactivate user after session was created
+        user.IsActive = false;
+        await Context.SaveChangesAsync();
+
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
+            .Returns(principal);
+
+        var request = new RefreshTokenRequest("expired-token", "my-refresh");
+        var result = await Sut.RefreshTokenAsync(request, tenant.Code);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Auth.InvalidRefreshToken", result.Error.Code);
+
+        var updatedSession = await Context.Set<UserSession>().FindAsync(session.Id);
+        Assert.True(updatedSession!.IsRevoked);
+        Assert.Equal("UserInactive", updatedSession.RevokedReason);
+    }
+
+    // ─── SecurityStamp Validation ───
+
+    [Fact]
+    public async Task Refresh_WhenSecurityStampChanged_RevokesSession()
+    {
+        var (user, tenant, _, _) = await SeedUserWithRoleAsync();
+        var session = CreateTestSession(user.Id, tenant.Id, "my-refresh", jti: "test-jti");
+        await Context.Set<UserSession>().AddAsync(session);
+        await Context.SaveChangesAsync();
+
+        // Token has OLD SecurityStamp, user has NEW one (password was changed)
+        var principal = CreatePrincipal(user.Id, tenant.Code, securityStamp: "old-stamp-not-matching");
+        TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
+            .Returns(principal);
+
+        var request = new RefreshTokenRequest("expired-token", "my-refresh");
+        var result = await Sut.RefreshTokenAsync(request, tenant.Code);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Auth.SecurityStampChanged", result.Error.Code);
+
+        var updatedSession = await Context.Set<UserSession>().FindAsync(session.Id);
+        Assert.True(updatedSession!.IsRevoked);
+        Assert.Equal("SecurityStampChanged", updatedSession.RevokedReason);
+        CacheMock.Verify(c => c.Remove("jti_valid:test-jti"), Times.Once);
+    }
+
+    [Fact]
+    public async Task Refresh_WhenSecurityStampClaimAbsent_SkipsStampValidation()
+    {
+        var (user, tenant, _, _) = await SeedUserWithRoleAsync();
+        var session = CreateTestSession(user.Id, tenant.Id, "my-refresh", jti: "old-jti");
+        await Context.Set<UserSession>().AddAsync(session);
+        await Context.SaveChangesAsync();
+
+        // No security_stamp claim — should skip validation and succeed
+        var principal = CreatePrincipal(user.Id, tenant.Code, securityStamp: null);
+        TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
+            .Returns(principal);
+
+        var request = new RefreshTokenRequest("expired-token", "my-refresh");
+        var result = await Sut.RefreshTokenAsync(request, tenant.Code);
+
+        Assert.True(result.IsSuccess);
+    }
+
+    // ─── Successful Token Rotation ───
+
+    [Fact]
+    public async Task Refresh_WhenValid_RotatesTokens()
+    {
+        var (user, tenant, _, _) = await SeedUserWithRoleAsync();
+        var session = CreateTestSession(user.Id, tenant.Id, "old-refresh", jti: "old-jti");
+        await Context.Set<UserSession>().AddAsync(session);
+        await Context.SaveChangesAsync();
+
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
+            .Returns(principal);
+
+        var request = new RefreshTokenRequest("expired-token", "old-refresh");
+        var result = await Sut.RefreshTokenAsync(request, tenant.Code);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("mock-access-token", result.Value.AccessToken);
+        Assert.Equal("mock-refresh-token", result.Value.RefreshToken);
+
+        // Session should have new tokens
+        var updatedSession = await Context.Set<UserSession>().FindAsync(session.Id);
+        Assert.Equal("mock-refresh-token", updatedSession!.RefreshToken);
+        Assert.NotEqual("old-jti", updatedSession.AccessTokenJti);
+        Assert.NotNull(updatedSession.LastAccessedAt);
+    }
+
+    [Fact]
+    public async Task Refresh_WhenValid_InvalidatesOldJti()
+    {
+        var (user, tenant, _, _) = await SeedUserWithRoleAsync();
+        var session = CreateTestSession(user.Id, tenant.Id, "old-refresh", jti: "old-jti-to-invalidate");
+        await Context.Set<UserSession>().AddAsync(session);
+        await Context.SaveChangesAsync();
+
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
+            .Returns(principal);
+
+        var request = new RefreshTokenRequest("expired-token", "old-refresh");
+        await Sut.RefreshTokenAsync(request, tenant.Code);
+
+        // Old JTI must be evicted from cache
+        CacheMock.Verify(c => c.Remove("jti_valid:old-jti-to-invalidate"), Times.Once);
+    }
+
+    [Fact]
+    public async Task Refresh_WhenValid_DoesNotExtendAbsoluteExpiry()
+    {
+        var (user, tenant, _, _) = await SeedUserWithRoleAsync();
+        var absoluteExpiry = DateTime.UtcNow.AddDays(3); // Expires in 3 days
+        var session = CreateTestSession(user.Id, tenant.Id, "old-refresh", jti: "old-jti",
+            expiresAt: absoluteExpiry);
+        await Context.Set<UserSession>().AddAsync(session);
+        await Context.SaveChangesAsync();
+
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
+            .Returns(principal);
+
+        var request = new RefreshTokenRequest("expired-token", "old-refresh");
+        await Sut.RefreshTokenAsync(request, tenant.Code);
+
+        // ExpiresAt should NOT be extended
+        var updatedSession = await Context.Set<UserSession>().FindAsync(session.Id);
+        Assert.Equal(absoluteExpiry, updatedSession!.ExpiresAt);
+    }
+
+    [Fact]
+    public async Task Refresh_WhenValid_DerivesTenantFromSessionNotHeader()
+    {
+        var (user, tenant, _, _) = await SeedUserWithRoleAsync();
+        var session = CreateTestSession(user.Id, tenant.Id, "old-refresh", jti: "old-jti");
+        await Context.Set<UserSession>().AddAsync(session);
+        await Context.SaveChangesAsync();
+
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
+            .Returns(principal);
+
+        var request = new RefreshTokenRequest("expired-token", "old-refresh");
+        await Sut.RefreshTokenAsync(request, tenant.Code);
+
+        // Verify the new access token uses the tenant Code from session, not the header
+        TokenServiceMock.Verify(t => t.GenerateAccessToken(
+            It.IsAny<AppUser>(), It.IsAny<IList<string>>(),
+            It.IsAny<IList<string>>(), tenant.Code, It.IsAny<string>()), Times.Once);
+    }
+}
