@@ -1,0 +1,197 @@
+using System.Security.Claims;
+using ERP.Identity.Configuration;
+using ERP.Identity.Entities;
+using ERP.Identity.Services;
+using ERP.Persistence.Context;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using Moq;
+
+namespace ERP.UnitTests.Identity;
+
+/// <summary>
+/// Base class for AuthService unit tests.
+/// Provides a fresh InMemory MasterDbContext, mock dependencies,
+/// and helper methods for seeding test data.
+///
+/// Each test class inherits this and gets an isolated database instance.
+/// </summary>
+public abstract class AuthServiceTestBase : IDisposable
+{
+    protected readonly MasterDbContext Context;
+    protected readonly Mock<ITokenService> TokenServiceMock;
+    protected readonly Mock<IMemoryCache> CacheMock;
+    protected readonly AuthService Sut; // System Under Test
+
+    protected static readonly JwtSettings TestJwtSettings = new()
+    {
+        SecretKey = "test-secret-key-32-chars-minimum!!",
+        Issuer = "test-issuer",
+        Audience = "test-audience",
+        AccessTokenExpirationMinutes = 60,
+        RefreshTokenExpirationDays = 7
+    };
+
+    protected AuthServiceTestBase()
+    {
+        // Each test gets its own InMemory DB (unique name prevents cross-test leakage)
+        var options = new DbContextOptionsBuilder<MasterDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        // Register Identity entity configurations so MasterDbContext knows about the entities
+        var identityAssembly = typeof(AppUser).Assembly;
+        if (!MasterDbContext.ConfigurationAssemblies.Contains(identityAssembly))
+            MasterDbContext.ConfigurationAssemblies.Add(identityAssembly);
+
+        Context = new MasterDbContext(options);
+
+        TokenServiceMock = new Mock<ITokenService>();
+        CacheMock = new Mock<IMemoryCache>();
+
+        // Default mock behavior — overridden in specific tests when needed
+        TokenServiceMock.Setup(t => t.GenerateRefreshToken())
+            .Returns("mock-refresh-token");
+        TokenServiceMock.Setup(t => t.GenerateAccessToken(
+                It.IsAny<AppUser>(), It.IsAny<IList<string>>(),
+                It.IsAny<IList<string>>(), It.IsAny<string>(), It.IsAny<string>()))
+            .Returns("mock-access-token");
+
+        Sut = new AuthService(
+            Context,
+            TokenServiceMock.Object,
+            CacheMock.Object,
+            Options.Create(TestJwtSettings),
+            NullLogger<AuthService>.Instance);
+    }
+
+    // ── Helper: Create a standard test user ──
+
+    protected AppUser CreateTestUser(
+        string userName = "testuser",
+        string password = "Password@123",
+        bool isActive = true,
+        bool isLocked = false,
+        int accessFailedCount = 0,
+        DateTime? lockoutEnd = null)
+    {
+        return new AppUser
+        {
+            UserName = userName,
+            NormalizedUserName = userName.ToUpperInvariant(),
+            Email = $"{userName}@example.com",
+            NormalizedEmail = $"{userName.ToUpperInvariant()}@EXAMPLE.COM",
+            PasswordHash = BCrypt.Net.BCrypt.HashPassword(password, workFactor: 4),
+            FirstName = "Test",
+            LastName = "User",
+            IsActive = isActive,
+            IsLocked = isLocked,
+            AccessFailedCount = accessFailedCount,
+            LockoutEnd = lockoutEnd,
+            SecurityStamp = Guid.NewGuid().ToString()
+        };
+    }
+
+    // ── Helper: Create a test tenant ──
+
+    protected Tenant CreateTestTenant(string code = "ABC")
+    {
+        return new Tenant
+        {
+            Code = code,
+            Name = $"{code} Manufacturing",
+            ConnectionString = $"Server=localhost;Database=ERP_{code}",
+            DbProvider = "SqlServer",
+            IsActive = true,
+            CreatedAt = DateTime.UtcNow
+        };
+    }
+
+    // ── Helper: Seed user with role and permission graph ──
+
+    protected async Task<(AppUser User, Tenant Tenant, AppRole Role, Permission Permission)> SeedUserWithRoleAsync(
+        string userName = "testuser",
+        string password = "Password@123",
+        string tenantCode = "ABC",
+        string roleName = "Admin",
+        string permissionCode = "JOBCARD_CREATE")
+    {
+        var user = CreateTestUser(userName, password);
+        var tenant = CreateTestTenant(tenantCode);
+        var permission = new Permission { Code = permissionCode, Name = "Create Job Card", Category = "Production" };
+        var role = new AppRole { Name = roleName, NormalizedName = roleName.ToUpperInvariant(), IsSystemRole = true };
+
+        await Context.Set<AppUser>().AddAsync(user);
+        await Context.Set<Tenant>().AddAsync(tenant);
+        await Context.Set<Permission>().AddAsync(permission);
+        await Context.Set<AppRole>().AddAsync(role);
+        await Context.SaveChangesAsync();
+
+        var rolePermission = new AppRolePermission { RoleId = role.Id, PermissionId = permission.Id };
+        var userRole = new AppUserRole { UserId = user.Id, RoleId = role.Id, TenantId = tenant.Id };
+
+        await Context.Set<AppRolePermission>().AddAsync(rolePermission);
+        await Context.Set<AppUserRole>().AddAsync(userRole);
+        await Context.SaveChangesAsync();
+
+        return (user, tenant, role, permission);
+    }
+
+    // ── Helper: Create a UserSession ──
+
+    protected UserSession CreateTestSession(
+        Guid userId,
+        Guid tenantId,
+        string refreshToken = "valid-refresh-token",
+        string jti = "original-jti",
+        bool isRevoked = false,
+        DateTime? expiresAt = null,
+        DateTime? refreshTokenExpiry = null)
+    {
+        return new UserSession
+        {
+            UserId = userId,
+            TenantId = tenantId,
+            RefreshToken = refreshToken,
+            RefreshTokenExpiry = refreshTokenExpiry ?? DateTime.UtcNow.AddDays(7),
+            AccessTokenJti = jti,
+            ExpiresAt = expiresAt ?? DateTime.UtcNow.AddDays(7),
+            IsRevoked = isRevoked,
+            CreatedAt = DateTime.UtcNow
+        };
+    }
+
+    // ── Helper: Build a ClaimsPrincipal for refresh token tests ──
+
+    protected static ClaimsPrincipal CreatePrincipal(
+        Guid userId,
+        string? tenantClaim = null,
+        string? securityStamp = null,
+        string? jti = null)
+    {
+        var claims = new List<Claim>
+        {
+            new(ClaimTypes.NameIdentifier, userId.ToString())
+        };
+
+        if (tenantClaim is not null)
+            claims.Add(new Claim("tenant_id", tenantClaim));
+
+        if (securityStamp is not null)
+            claims.Add(new Claim("security_stamp", securityStamp));
+
+        if (jti is not null)
+            claims.Add(new Claim("jti", jti));
+
+        return new ClaimsPrincipal(new ClaimsIdentity(claims, "Test"));
+    }
+
+    public void Dispose()
+    {
+        Context.Dispose();
+        GC.SuppressFinalize(this);
+    }
+}
