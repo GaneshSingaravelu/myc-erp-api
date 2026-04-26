@@ -1,6 +1,9 @@
 using System.Security.Claims;
+using ERP.Identity.Abstractions;
+using ERP.Identity.Abstractions.Persistence;
 using ERP.Identity.Configuration;
 using ERP.Identity.Entities;
+using ERP.Identity.Persistence;
 using ERP.Identity.Services;
 using ERP.Persistence.Context;
 using Microsoft.EntityFrameworkCore;
@@ -67,8 +70,23 @@ public abstract class AuthServiceTestBase : IDisposable
                 It.IsAny<IList<string>>(), It.IsAny<string>(), It.IsAny<string>()))
             .Returns("mock-access-token");
 
+        // Wire real repository implementations over the InMemory context.
+        // This keeps the test investment in seeded graphs (SeedUserWithRoleAsync, etc.)
+        // while still verifying AuthService against the refactored repository contracts.
+        // All repositories share the same DbContext instance → IMasterUnitOfWork.SaveChangesAsync
+        // commits changes staged through any of them in a single EF Core SaveChanges call.
+        var users = new UserRepository(Context);
+        var sessions = new UserSessionRepository(Context);
+        var passwordHistory = new UserPasswordHistoryRepository(Context);
+        var tenants = new TenantRepository(Context);
+        var unitOfWork = new MasterUnitOfWork(Context);
+
         Sut = new AuthService(
-            Context,
+            users,
+            sessions,
+            passwordHistory,
+            tenants,
+            unitOfWork,
             TokenServiceMock.Object,
             CacheMock.Object,
             Options.Create(TestJwtSettings),

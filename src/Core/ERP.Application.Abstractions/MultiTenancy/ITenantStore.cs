@@ -1,4 +1,4 @@
-namespace ERP.Infrastructure.Tenant;
+namespace ERP.Application.Abstractions.MultiTenancy;
 
 /// <summary>
 /// TENANT STORE — Retrieves tenant information from the master database.

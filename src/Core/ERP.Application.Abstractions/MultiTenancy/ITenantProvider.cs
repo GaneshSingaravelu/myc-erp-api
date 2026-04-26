@@ -1,4 +1,4 @@
-namespace ERP.Infrastructure.Tenant;
+namespace ERP.Application.Abstractions.MultiTenancy;
 
 /// <summary>
 /// TENANT PROVIDER — Provides the current tenant for the current HTTP request.

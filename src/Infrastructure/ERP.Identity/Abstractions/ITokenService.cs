@@ -1,9 +1,13 @@
 using ERP.Identity.Entities;
 
-namespace ERP.Identity.Services;
+namespace ERP.Identity.Abstractions;
 
 /// <summary>
 /// TOKEN SERVICE — Generates and validates JWT tokens.
+///
+/// NOTE: This interface lives inside ERP.Identity (NOT in ERP.Application.Abstractions)
+/// because its signature depends on the AppUser entity, which is an internal Identity concept.
+/// It's only consumed by AuthService inside the same module — no need to expose it upward.
 ///
 /// WHY ACCESS TOKEN + REFRESH TOKEN?
 /// ===================================

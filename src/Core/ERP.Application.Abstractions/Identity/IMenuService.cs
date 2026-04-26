@@ -1,7 +1,7 @@
-using ERP.Identity.DTOs;
+using ERP.Application.Abstractions.Identity.Contracts;
 using ERP.SharedKernel.Results;
 
-namespace ERP.Identity.Services;
+namespace ERP.Application.Abstractions.Identity;
 
 /// <summary>
 /// MENU SERVICE — Returns permission-filtered, feature-flag-aware menu trees.

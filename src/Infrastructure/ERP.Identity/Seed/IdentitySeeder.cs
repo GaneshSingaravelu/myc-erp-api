@@ -70,81 +70,52 @@ public static class IdentitySeeder
             // ── SEED TENANTS (from configuration) ───────────────
             await SeedTenantsAsync(context, configuration, logger);
 
-            // Only seed identity if no users exist (first run)
-            if (await context.Set<AppUser>().AnyAsync())
-            {
-                logger.LogDebug("Identity data already seeded. Skipping.");
-                return;
-            }
-
-            logger.LogInformation("Seeding identity data...");
-
-            // Get the first tenant for admin role assignment
+            // Get the first tenant for role/user assignment
             var firstTenant = await context.Set<Tenant>().FirstOrDefaultAsync();
             var defaultTenantId = firstTenant?.Id ?? Guid.Empty;
 
-            // ── PERMISSIONS ──────────────────────────────────────
-            var permissions = CreateDefaultPermissions();
-            await context.Set<Permission>().AddRangeAsync(permissions);
+            // ── PERMISSIONS (incremental — skips existing) ──────
+            var allPermissions = CreateDefaultPermissions();
+            var existingPermCodes = await context.Set<Permission>()
+                .Select(p => p.Code).ToListAsync();
+            var newPermissions = allPermissions
+                .Where(p => !existingPermCodes.Contains(p.Code)).ToList();
 
-            // ── ROLES ────────────────────────────────────────────
-            var adminRole = new AppRole
+            if (newPermissions.Count > 0)
             {
-                Id = Guid.Parse("00000000-0000-0000-0000-000000000001"),
-                Name = "Admin",
-                NormalizedName = "ADMIN",
-                Description = "Full system access",
-                IsSystemRole = true
-            };
+                await context.Set<Permission>().AddRangeAsync(newPermissions);
+                await context.SaveChangesAsync();
+                logger.LogInformation("Seeded {Count} new permissions.", newPermissions.Count);
+            }
 
-            var operatorRole = new AppRole
-            {
-                Id = Guid.Parse("00000000-0000-0000-0000-000000000002"),
-                Name = "Production Operator",
-                NormalizedName = "PRODUCTION OPERATOR",
-                Description = "Can manage job cards and production",
-                IsSystemRole = true
-            };
+            // Reload all permissions from DB (needed for role-permission linking)
+            var permissions = await context.Set<Permission>().ToListAsync();
 
-            var qaRole = new AppRole
-            {
-                Id = Guid.Parse("00000000-0000-0000-0000-000000000003"),
-                Name = "QA Inspector",
-                NormalizedName = "QA INSPECTOR",
-                Description = "Can inspect and approve/reject quality",
-                IsSystemRole = true
-            };
+            // ── ROLES (incremental — skips existing) ─────────────
+            var adminRole = await SeedRoleIfMissing(context, "00000000-0000-0000-0000-000000000001",
+                "Admin", "Full system access", true);
+            var operatorRole = await SeedRoleIfMissing(context, "00000000-0000-0000-0000-000000000002",
+                "Production Operator", "Can manage job cards and production", true);
+            var qaRole = await SeedRoleIfMissing(context, "00000000-0000-0000-0000-000000000003",
+                "QA Inspector", "Can inspect and approve/reject quality", true);
+            var viewerRole = await SeedRoleIfMissing(context, "00000000-0000-0000-0000-000000000004",
+                "Viewer", "Read-only access", true);
 
-            var viewerRole = new AppRole
-            {
-                Id = Guid.Parse("00000000-0000-0000-0000-000000000004"),
-                Name = "Viewer",
-                NormalizedName = "VIEWER",
-                Description = "Read-only access",
-                IsSystemRole = true
-            };
+            await context.SaveChangesAsync();
 
-            await context.Set<AppRole>().AddRangeAsync(adminRole, operatorRole, qaRole, viewerRole);
+            // ── ROLE-PERMISSION ASSIGNMENTS (incremental) ────────
+            await SeedRolePermissions(context, adminRole, permissions, _ => true);
+            await SeedRolePermissions(context, operatorRole, permissions,
+                p => p.Category is "WorkOrder" or "JobCard" or "Production");
+            await SeedRolePermissions(context, qaRole, permissions,
+                p => p.Category == "QA" || p.Code.EndsWith(".view"));
+            await SeedRolePermissions(context, viewerRole, permissions,
+                p => p.Code.EndsWith(".view"));
 
-            // ── ROLE-PERMISSION ASSIGNMENTS ──────────────────────
-            // Admin gets ALL permissions
-            foreach (var p in permissions)
-                adminRole.RolePermissions.Add(new AppRolePermission { RoleId = adminRole.Id, PermissionId = p.Id });
+            await context.SaveChangesAsync();
 
-            // Operator gets production permissions
-            foreach (var p in permissions.Where(p => p.Category is "WorkOrder" or "JobCard" or "Production"))
-                operatorRole.RolePermissions.Add(new AppRolePermission { RoleId = operatorRole.Id, PermissionId = p.Id });
-
-            // QA gets QA permissions + view permissions
-            foreach (var p in permissions.Where(p => p.Category == "QA" || p.Code.EndsWith(".view")))
-                qaRole.RolePermissions.Add(new AppRolePermission { RoleId = qaRole.Id, PermissionId = p.Id });
-
-            // Viewer gets only view permissions
-            foreach (var p in permissions.Where(p => p.Code.EndsWith(".view")))
-                viewerRole.RolePermissions.Add(new AppRolePermission { RoleId = viewerRole.Id, PermissionId = p.Id });
-
-            // ── ADMIN USER ───────────────────────────────────────
-            var adminUser = new AppUser
+            // ── ADMIN USER (incremental) ─────────────────────────
+            await SeedUserIfMissing(context, new AppUser
             {
                 Id = Guid.Parse("00000000-0000-0000-0000-000000000099"),
                 UserName = "admin",
@@ -155,38 +126,29 @@ public static class IdentitySeeder
                 FirstName = "System",
                 LastName = "Administrator",
                 IsActive = true
-            };
+            }, adminRole.Id, defaultTenantId, firstTenant, assignedBy: null, globalPlantAccess: true, logger);
 
-            await context.Set<AppUser>().AddAsync(adminUser);
-
-            // Assign admin role (with tenant context)
-            adminUser.UserRoles.Add(new AppUserRole
+            // ── SAMPLE USERS (Development only, incremental) ─────
+            if (environment.IsDevelopment())
             {
-                UserId = adminUser.Id,
-                RoleId = adminRole.Id,
-                TenantId = defaultTenantId,
-                AssignedBy = null
-            });
-
-            // Add admin to the default tenant
-            if (firstTenant is not null)
-            {
-                context.Set<UserTenant>().Add(new UserTenant
+                var adminUserId = Guid.Parse("00000000-0000-0000-0000-000000000099");
+                var sampleUsers = CreateSampleUsers(adminPassword, defaultTenantId, operatorRole, qaRole, viewerRole);
+                foreach (var (user, roleId) in sampleUsers)
                 {
-                    UserId = adminUser.Id,
-                    TenantId = firstTenant.Id,
-                    IsDefault = true,
-                    HasGlobalPlantAccess = true,
-                    IsActive = true,
-                    JoinedAt = DateTime.UtcNow
-                });
+                    await SeedUserIfMissing(context, user, roleId, defaultTenantId,
+                        firstTenant, assignedBy: adminUserId, globalPlantAccess: false, logger);
+                }
             }
 
-            // ── MODULES & MENUS ──────────────────────────────────
-            SeedModulesAndMenus(context, permissions);
+            // ── MODULES & MENUS (only if no modules exist yet) ───
+            if (!await context.Set<Module>().AnyAsync())
+            {
+                SeedModulesAndMenus(context, permissions);
+                logger.LogInformation("Seeded modules and menus.");
+            }
 
             await context.SaveChangesAsync();
-            logger.LogInformation("Identity data seeded: {PermCount} permissions, 4 roles, 1 admin user (username: admin), modules & menus. Change the default password immediately.",
+            logger.LogInformation("Identity seed completed. {PermCount} permissions, 4 roles, modules & menus verified.",
                 permissions.Count);
         }
         catch (Exception ex)
@@ -232,6 +194,139 @@ public static class IdentitySeeder
         }
 
         await context.SaveChangesAsync();
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // INCREMENTAL SEED HELPERS
+    // Each checks if the record exists before inserting — safe to run
+    // on every startup without dropping the DB.
+    // ══════════════════════════════════════════════════════════════════
+
+    private static async Task<AppRole> SeedRoleIfMissing(
+        MasterDbContext context, string guidString, string name, string description, bool isSystem)
+    {
+        var id = Guid.Parse(guidString);
+        var existing = await context.Set<AppRole>().FirstOrDefaultAsync(r => r.Id == id);
+        if (existing is not null) return existing;
+
+        var role = new AppRole
+        {
+            Id = id,
+            Name = name,
+            NormalizedName = name.ToUpperInvariant(),
+            Description = description,
+            IsSystemRole = isSystem
+        };
+        await context.Set<AppRole>().AddAsync(role);
+        return role;
+    }
+
+    private static async Task SeedRolePermissions(
+        MasterDbContext context, AppRole role, List<Permission> allPermissions, Func<Permission, bool> filter)
+    {
+        var existingPermIds = await context.Set<AppRolePermission>()
+            .Where(rp => rp.RoleId == role.Id)
+            .Select(rp => rp.PermissionId)
+            .ToListAsync();
+
+        var newAssignments = allPermissions
+            .Where(filter)
+            .Where(p => !existingPermIds.Contains(p.Id))
+            .Select(p => new AppRolePermission { RoleId = role.Id, PermissionId = p.Id })
+            .ToList();
+
+        if (newAssignments.Count > 0)
+            await context.Set<AppRolePermission>().AddRangeAsync(newAssignments);
+    }
+
+    private static async Task SeedUserIfMissing(
+        MasterDbContext context, AppUser user, Guid roleId, Guid tenantId,
+        Tenant? tenant, Guid? assignedBy, bool globalPlantAccess, ILogger logger)
+    {
+        if (await context.Set<AppUser>().AnyAsync(u => u.Id == user.Id))
+            return;
+
+        await context.Set<AppUser>().AddAsync(user);
+
+        user.UserRoles.Add(new AppUserRole
+        {
+            UserId = user.Id,
+            RoleId = roleId,
+            TenantId = tenantId,
+            AssignedBy = assignedBy
+        });
+
+        if (tenant is not null)
+        {
+            context.Set<UserTenant>().Add(new UserTenant
+            {
+                UserId = user.Id,
+                TenantId = tenant.Id,
+                IsDefault = true,
+                HasGlobalPlantAccess = globalPlantAccess,
+                IsActive = true,
+                JoinedAt = DateTime.UtcNow
+            });
+        }
+
+        logger.LogInformation("Seeded user: {UserName} ({FullName})", user.UserName, $"{user.FirstName} {user.LastName}");
+    }
+
+    /// <summary>
+    /// Creates sample users for development/testing — one per role.
+    /// All use the same password as the admin user for convenience.
+    /// Returns a list of (AppUser, RoleId) tuples.
+    /// </summary>
+    private static List<(AppUser User, Guid RoleId)> CreateSampleUsers(
+        string password,
+        Guid tenantId,
+        AppRole operatorRole,
+        AppRole qaRole,
+        AppRole viewerRole)
+    {
+        var hash = BCrypt.Net.BCrypt.HashPassword(password);
+
+        return
+        [
+            (new AppUser
+            {
+                Id = Guid.Parse("00000000-0000-0000-0000-000000000101"),
+                UserName = "operator",
+                NormalizedUserName = "OPERATOR",
+                Email = "operator@erp.local",
+                NormalizedEmail = "OPERATOR@ERP.LOCAL",
+                PasswordHash = hash,
+                FirstName = "Raj",
+                LastName = "Kumar",
+                IsActive = true
+            }, operatorRole.Id),
+
+            (new AppUser
+            {
+                Id = Guid.Parse("00000000-0000-0000-0000-000000000102"),
+                UserName = "inspector",
+                NormalizedUserName = "INSPECTOR",
+                Email = "inspector@erp.local",
+                NormalizedEmail = "INSPECTOR@ERP.LOCAL",
+                PasswordHash = hash,
+                FirstName = "Priya",
+                LastName = "Sharma",
+                IsActive = true
+            }, qaRole.Id),
+
+            (new AppUser
+            {
+                Id = Guid.Parse("00000000-0000-0000-0000-000000000103"),
+                UserName = "viewer",
+                NormalizedUserName = "VIEWER",
+                Email = "viewer@erp.local",
+                NormalizedEmail = "VIEWER@ERP.LOCAL",
+                PasswordHash = hash,
+                FirstName = "Arun",
+                LastName = "Patel",
+                IsActive = true
+            }, viewerRole.Id),
+        ];
     }
 
     private static List<Permission> CreateDefaultPermissions()

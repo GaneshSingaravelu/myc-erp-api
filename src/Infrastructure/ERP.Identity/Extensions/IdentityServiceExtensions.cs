@@ -1,8 +1,12 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using ERP.Application.Abstractions.Identity;
+using ERP.Identity.Abstractions;
+using ERP.Identity.Abstractions.Persistence;
 using ERP.Identity.Configuration;
 using ERP.Identity.Entities;
+using ERP.Identity.Persistence;
 using ERP.Identity.Services;
 using ERP.Persistence.Context;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -65,6 +69,20 @@ public static class IdentityServiceExtensions
 
         // Register token service
         services.AddSingleton<ITokenService, TokenService>();
+
+        // Register Master-DB repositories + UoW.
+        // Scoped lifetime so all repositories share the same MasterDbContext within
+        // a single HTTP request — that's what makes IMasterUnitOfWork.SaveChangesAsync()
+        // commit changes staged by every repository in one transaction.
+        services.AddScoped<IUserRepository, UserRepository>();
+        services.AddScoped<IRoleRepository, RoleRepository>();
+        services.AddScoped<IPermissionRepository, PermissionRepository>();
+        services.AddScoped<IMenuRepository, MenuRepository>();
+        services.AddScoped<IFeatureFlagRepository, FeatureFlagRepository>();
+        services.AddScoped<IUserSessionRepository, UserSessionRepository>();
+        services.AddScoped<IUserPasswordHistoryRepository, UserPasswordHistoryRepository>();
+        services.AddScoped<ITenantRepository, TenantRepository>();
+        services.AddScoped<IMasterUnitOfWork, MasterUnitOfWork>();
 
         // Register identity services
         services.AddScoped<IAuthService, AuthService>();

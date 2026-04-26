@@ -1,3 +1,4 @@
+using ERP.Application.Abstractions.MultiTenancy;
 using ERP.Persistence.Context;
 using ERP.Persistence.Interceptors;
 using ERP.Persistence.SqlServer.Extensions;

@@ -1,5 +1,5 @@
 using System.Security.Claims;
-using ERP.Identity.DTOs;
+using ERP.Application.Abstractions.Identity.Contracts;
 using ERP.Identity.Entities;
 using Microsoft.EntityFrameworkCore;
 using Moq;

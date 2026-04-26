@@ -85,7 +85,7 @@ builder.Services.AddIdentityServices(builder.Configuration);
 // --- Workflow Module: Process Templates ---
 builder.Services.AddWorkflowModule();
 
-// --- Production Module: Work Orders, Job Cards ---
+// --- Production Module: Work Orders, Job Cards ---+_
 builder.Services.AddProductionModule();
 
 // --- Notifications: SignalR ---

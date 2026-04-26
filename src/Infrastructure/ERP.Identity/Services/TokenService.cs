@@ -2,6 +2,7 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
+using ERP.Identity.Abstractions;
 using ERP.Identity.Configuration;
 using ERP.Identity.Entities;
 using Microsoft.Extensions.Options;

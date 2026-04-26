@@ -1,6 +1,6 @@
-using ERP.Identity.DTOs;
-using ERP.Identity.Services;
-using ERP.Infrastructure.Tenant;
+using ERP.Application.Abstractions.Identity;
+using ERP.Application.Abstractions.Identity.Contracts;
+using ERP.Application.Abstractions.MultiTenancy;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
