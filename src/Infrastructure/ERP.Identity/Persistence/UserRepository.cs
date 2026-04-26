@@ -74,6 +74,10 @@ public sealed class UserRepository : IUserRepository
     public Task<bool> ExistsByNormalizedUserNameAsync(string normalizedUserName, CancellationToken cancellationToken = default)
         => _context.Set<AppUser>().AnyAsync(u => u.NormalizedUserName == normalizedUserName, cancellationToken);
 
+    public Task<bool> IsAssignedToTenantAsync(Guid userId, Guid tenantId, CancellationToken cancellationToken = default)
+        => _context.Set<UserTenant>()
+            .AnyAsync(ut => ut.UserId == userId && ut.TenantId == tenantId && ut.IsActive, cancellationToken);
+
     public Task<bool> ExistsByNormalizedEmailAsync(string normalizedEmail, CancellationToken cancellationToken = default)
         => _context.Set<AppUser>().AnyAsync(u => u.NormalizedEmail == normalizedEmail, cancellationToken);
 

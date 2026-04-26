@@ -39,7 +39,13 @@ public class AuthController : ControllerBase
     [AllowAnonymous]
     public async Task<IActionResult> Login([FromBody] LoginRequest request, [FromHeader(Name = "X-Tenant-Id")] string? tenantId)
     {
-        var result = await _authService.LoginAsync(request, tenantId ?? "default");
+        // Require explicit tenant context — silent fallback ("default") hid client
+        // configuration errors and risked routing into a real tenant whose code
+        // happened to be "default". Forcing a 400 surfaces the misconfiguration.
+        if (string.IsNullOrWhiteSpace(tenantId))
+            return BadRequest(new { error = "X-Tenant-Id header is required." });
+
+        var result = await _authService.LoginAsync(request, tenantId);
 
         if (result.IsFailure)
             return result.Error.Code switch
@@ -78,7 +84,11 @@ public class AuthController : ControllerBase
     [AllowAnonymous]
     public async Task<IActionResult> Refresh([FromBody] RefreshTokenRequest request, [FromHeader(Name = "X-Tenant-Id")] string? tenantId)
     {
-        var result = await _authService.RefreshTokenAsync(request, tenantId ?? "default");
+        // Same rule as /login — refusal is more honest than substituting "default".
+        if (string.IsNullOrWhiteSpace(tenantId))
+            return BadRequest(new { error = "X-Tenant-Id header is required." });
+
+        var result = await _authService.RefreshTokenAsync(request, tenantId);
 
         if (result.IsFailure)
             return Unauthorized(new { error = result.Error.Message });

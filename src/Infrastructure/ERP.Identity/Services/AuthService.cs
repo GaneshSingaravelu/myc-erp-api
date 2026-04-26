@@ -1,3 +1,4 @@
+using System.IdentityModel.Tokens.Jwt;
 using ERP.Application.Abstractions.Identity;
 using ERP.Application.Abstractions.Identity.Contracts;
 using ERP.Identity.Abstractions;
@@ -159,6 +160,23 @@ public class AuthService : IAuthService
             return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidTenant", "Tenant not found."));
         }
 
+        // Step 5b: Cross-tenant isolation gate — verify the user is an active member of
+        // this tenant via the UserTenants junction. WITHOUT this check, valid credentials
+        // would let any user authenticate into ANY existing tenant by varying the
+        // X-Tenant-Id header (cross-tenant authentication / isolation break).
+        //
+        // The error code is intentionally generic ("InvalidCredentials") rather than
+        // "NotAssignedToTenant" so we don't leak tenant-membership info to attackers
+        // probing valid credential / tenant pairings.
+        if (!await _users.IsAssignedToTenantAsync(user.Id, resolvedTenant.Id))
+        {
+            _logger.LogWarning(
+                "Login denied: user '{UserName}' is not an active member of tenant '{TenantCode}'",
+                user.UserName,
+                resolvedTenant.Code);
+            return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidCredentials", "Invalid username or password."));
+        }
+
         // Step 6: Generate tokens — JTI must match between token and session for revocation checks.
         // Token claim always uses tenant Code (human-readable), regardless of how the caller addressed it.
         var jti = Guid.NewGuid().ToString();
@@ -241,6 +259,26 @@ public class AuthService : IAuthService
 
         if (session is null)
             return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidRefreshToken", "Invalid or expired refresh token."));
+
+        // SECURITY: Bind the access token's jti to this session's AccessTokenJti.
+        // Without this, an attacker holding access token A from session-1 and refresh
+        // token B from session-2 (same user, different devices/sessions) could mix-and-match.
+        // The session was found by refresh token alone — we MUST also verify the access
+        // token presented in the same request actually belongs to that session.
+        var accessTokenJti = principal.FindFirst(JwtRegisteredClaimNames.Jti)?.Value;
+        if (string.IsNullOrEmpty(accessTokenJti) || accessTokenJti != session.AccessTokenJti)
+        {
+            session.IsRevoked = true;
+            session.RevokedAt = now;
+            session.RevokedReason = "JtiMismatch";
+            await _unitOfWork.SaveChangesAsync();
+            InvalidateJtiCache(session.AccessTokenJti);
+
+            _logger.LogWarning(
+                "Refresh rejected for user {UserId}: access-token jti '{TokenJti}' does not match session jti '{SessionJti}'",
+                userId, accessTokenJti, session.AccessTokenJti);
+            return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidRefreshToken", "Token pair mismatch. Please log in again."));
+        }
 
         // SECURITY: Enforce tenant binding — session.TenantId must match the requested tenant.
         // This prevents token replay across tenants (manipulating X-Tenant-Id header).

@@ -87,7 +87,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         await Context.Set<UserSession>().AddAsync(session);
         await Context.SaveChangesAsync();
 
-        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp, jti: "test-jti");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -108,7 +108,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         await Context.Set<UserSession>().AddAsync(session);
         await Context.SaveChangesAsync();
 
-        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp, jti: "test-jti");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -129,7 +129,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         await Context.Set<UserSession>().AddAsync(session);
         await Context.SaveChangesAsync();
 
-        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp, jti: "test-jti");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -155,7 +155,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         await Context.Set<UserSession>().AddAsync(session);
         await Context.SaveChangesAsync();
 
-        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp, jti: "test-jti");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -183,7 +183,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         await Context.Set<UserSession>().AddAsync(session);
         await Context.SaveChangesAsync();
 
-        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp, jti: "test-jti");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -208,7 +208,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         await Context.SaveChangesAsync();
 
         // Token's tenant_id claim points to a DIFFERENT tenant than the session
-        var principal = CreatePrincipal(user.Id, tenantClaim: otherTenant.Code, securityStamp: user.SecurityStamp);
+        var principal = CreatePrincipal(user.Id, tenantClaim: otherTenant.Code, securityStamp: user.SecurityStamp, jti: "test-jti");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -237,7 +237,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         user.IsActive = false;
         await Context.SaveChangesAsync();
 
-        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp, jti: "test-jti");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -263,7 +263,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         await Context.SaveChangesAsync();
 
         // Token has OLD SecurityStamp, user has NEW one (password was changed)
-        var principal = CreatePrincipal(user.Id, tenant.Code, securityStamp: "old-stamp-not-matching");
+        var principal = CreatePrincipal(user.Id, tenant.Code, securityStamp: "old-stamp-not-matching", jti: "test-jti");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -288,7 +288,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         await Context.SaveChangesAsync();
 
         // No security_stamp claim — should skip validation and succeed
-        var principal = CreatePrincipal(user.Id, tenant.Code, securityStamp: null);
+        var principal = CreatePrincipal(user.Id, tenant.Code, securityStamp: null, jti: "old-jti");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -308,7 +308,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         await Context.Set<UserSession>().AddAsync(session);
         await Context.SaveChangesAsync();
 
-        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp, jti: "old-jti");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -334,7 +334,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         await Context.Set<UserSession>().AddAsync(session);
         await Context.SaveChangesAsync();
 
-        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp, jti: "old-jti-to-invalidate");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -355,7 +355,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         await Context.Set<UserSession>().AddAsync(session);
         await Context.SaveChangesAsync();
 
-        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp, jti: "old-jti");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -375,7 +375,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         await Context.Set<UserSession>().AddAsync(session);
         await Context.SaveChangesAsync();
 
-        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp, jti: "old-jti");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -386,5 +386,63 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         TokenServiceMock.Verify(t => t.GenerateAccessToken(
             It.IsAny<AppUser>(), It.IsAny<IList<string>>(),
             It.IsAny<IList<string>>(), tenant.Code, It.IsAny<string>()), Times.Once);
+    }
+
+    // ─── JTI Binding (security review finding #2) ───
+
+    [Fact]
+    public async Task Refresh_WhenAccessTokenJtiMissing_RevokesSessionAndReturnsError()
+    {
+        // Without a jti claim, an attacker could present an arbitrary expired
+        // token paired with a valid refresh token. The session MUST be revoked
+        // and the refresh attempt rejected so the user has to re-authenticate.
+        var (user, tenant, _, _) = await SeedUserWithRoleAsync();
+        var session = CreateTestSession(user.Id, tenant.Id, "my-refresh", jti: "session-jti");
+        await Context.Set<UserSession>().AddAsync(session);
+        await Context.SaveChangesAsync();
+
+        // Principal omits the jti claim entirely (jti: null → no claim added).
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp, jti: null);
+        TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
+            .Returns(principal);
+
+        var request = new RefreshTokenRequest("expired-token", "my-refresh");
+        var result = await Sut.RefreshTokenAsync(request, tenant.Code);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Auth.InvalidRefreshToken", result.Error.Code);
+
+        var updated = await Context.Set<UserSession>().FindAsync(session.Id);
+        Assert.True(updated!.IsRevoked);
+        Assert.Equal("JtiMismatch", updated.RevokedReason);
+        CacheMock.Verify(c => c.Remove("jti_valid:session-jti"), Times.Once);
+    }
+
+    [Fact]
+    public async Task Refresh_WhenAccessTokenJtiDoesNotMatchSession_RevokesSessionAndReturnsError()
+    {
+        // Access token A from session-1 + refresh token B from session-2 (same user)
+        // is the canonical mix-and-match attack. The presented jti != session.AccessTokenJti
+        // must be detected, the session revoked, and the JTI cache invalidated.
+        var (user, tenant, _, _) = await SeedUserWithRoleAsync();
+        var session = CreateTestSession(user.Id, tenant.Id, "session2-refresh", jti: "session2-jti");
+        await Context.Set<UserSession>().AddAsync(session);
+        await Context.SaveChangesAsync();
+
+        // Principal carries jti from a DIFFERENT session.
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp, jti: "session1-jti");
+        TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
+            .Returns(principal);
+
+        var request = new RefreshTokenRequest("expired-token", "session2-refresh");
+        var result = await Sut.RefreshTokenAsync(request, tenant.Code);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Auth.InvalidRefreshToken", result.Error.Code);
+
+        var updated = await Context.Set<UserSession>().FindAsync(session.Id);
+        Assert.True(updated!.IsRevoked);
+        Assert.Equal("JtiMismatch", updated.RevokedReason);
+        CacheMock.Verify(c => c.Remove("jti_valid:session2-jti"), Times.Once);
     }
 }

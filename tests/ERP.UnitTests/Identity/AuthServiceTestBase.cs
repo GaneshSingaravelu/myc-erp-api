@@ -157,9 +157,14 @@ public abstract class AuthServiceTestBase : IDisposable
 
         var rolePermission = new AppRolePermission { RoleId = role.Id, PermissionId = permission.Id };
         var userRole = new AppUserRole { UserId = user.Id, RoleId = role.Id, TenantId = tenant.Id };
+        // UserTenant is the cross-tenant isolation gate enforced at login. Production
+        // seeds it for every user-tenant assignment, so happy-path tests must too —
+        // otherwise the new IUserRepository.IsAssignedToTenantAsync check rejects login.
+        var userTenant = new UserTenant { UserId = user.Id, TenantId = tenant.Id, IsActive = true };
 
         await Context.Set<AppRolePermission>().AddAsync(rolePermission);
         await Context.Set<AppUserRole>().AddAsync(userRole);
+        await Context.Set<UserTenant>().AddAsync(userTenant);
         await Context.SaveChangesAsync();
 
         return (user, tenant, role, permission);

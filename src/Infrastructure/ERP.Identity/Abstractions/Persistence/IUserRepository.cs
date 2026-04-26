@@ -52,6 +52,19 @@ public interface IUserRepository
     /// <summary>Check whether any user already uses this normalized username.</summary>
     Task<bool> ExistsByNormalizedUserNameAsync(string normalizedUserName, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Verify that the user is an active member of the given tenant via the
+    /// <c>UserTenants</c> junction table. This is the cross-tenant isolation
+    /// gate enforced at login time — without it, valid credentials let a user
+    /// authenticate into ANY existing tenant by varying the X-Tenant-Id header.
+    ///
+    /// Returns <c>true</c> only when a matching <c>UserTenant</c> row exists
+    /// AND <c>IsActive == true</c>. Inactive memberships are treated the same
+    /// as missing ones — the caller cannot distinguish "never assigned" from
+    /// "access revoked" by design (avoids account-enumeration leaks).
+    /// </summary>
+    Task<bool> IsAssignedToTenantAsync(Guid userId, Guid tenantId, CancellationToken cancellationToken = default);
+
     /// <summary>Check whether any user already uses this normalized email.</summary>
     Task<bool> ExistsByNormalizedEmailAsync(string normalizedEmail, CancellationToken cancellationToken = default);
 
