@@ -245,7 +245,10 @@ public class AuthService : IAuthService
         if (principal is null)
             return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidToken", "Invalid access token."));
 
-        var userIdClaim = principal.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+        // Read by JWT-native short name. GetPrincipalFromExpiredToken disables
+        // inbound claim mapping (see TokenService), so "sub" stays "sub" rather
+        // than being remapped to ClaimTypes.NameIdentifier.
+        var userIdClaim = principal.FindFirst(JwtRegisteredClaimNames.Sub)?.Value;
         if (userIdClaim is null || !Guid.TryParse(userIdClaim, out var userId))
             return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidToken", "Invalid token claims."));
 
@@ -265,6 +268,13 @@ public class AuthService : IAuthService
         // token B from session-2 (same user, different devices/sessions) could mix-and-match.
         // The session was found by refresh token alone — we MUST also verify the access
         // token presented in the same request actually belongs to that session.
+        //
+        // Reads here use JWT-native short names ("jti", "sub") because
+        // TokenService.GetPrincipalFromExpiredToken disables inbound claim mapping.
+        // That keeps the claim contract explicit and immune to future changes in
+        // JwtSecurityTokenHandler.DefaultInboundClaimTypeMap. The integration test
+        // Refresh_WithRealJwtRoundTrip_FindsJtiClaim asserts the round-trip works
+        // against the real handler, not just hand-built principals.
         var accessTokenJti = principal.FindFirst(JwtRegisteredClaimNames.Jti)?.Value;
         if (string.IsNullOrEmpty(accessTokenJti) || accessTokenJti != session.AccessTokenJti)
         {

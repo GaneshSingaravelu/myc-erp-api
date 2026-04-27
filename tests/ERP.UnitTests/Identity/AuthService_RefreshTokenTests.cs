@@ -1,7 +1,12 @@
+using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using ERP.Application.Abstractions.Identity.Contracts;
 using ERP.Identity.Entities;
+using ERP.Identity.Persistence;
+using ERP.Identity.Services;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 
 namespace ERP.UnitTests.Identity;
@@ -48,7 +53,11 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
     [Fact]
     public async Task Refresh_WhenUserIdClaimNotGuid_ReturnsInvalidToken()
     {
-        var claims = new List<Claim> { new(ClaimTypes.NameIdentifier, "not-a-guid") };
+        // Use the JWT-native short name "sub" — production reads via that name now
+        // (TokenService disables inbound claim mapping). Using ClaimTypes.NameIdentifier
+        // here would silently make the test exercise the missing-claim branch instead
+        // of the not-a-guid branch.
+        var claims = new List<Claim> { new(JwtRegisteredClaimNames.Sub, "not-a-guid") };
         var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test"));
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
@@ -416,6 +425,72 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         Assert.True(updated!.IsRevoked);
         Assert.Equal("JtiMismatch", updated.RevokedReason);
         CacheMock.Verify(c => c.Remove("jti_valid:session-jti"), Times.Once);
+    }
+
+    // ─── Real-JWT Round-Trip Integration (security review follow-up) ───
+
+    [Fact]
+    public async Task Refresh_WithRealJwtRoundTrip_FindsJtiClaim()
+    {
+        // Why a real-JWT integration test (not just the manual-Claim ones above):
+        //
+        // The other refresh tests construct ClaimsPrincipal by hand with literal
+        // claim names ("jti", "sub", ...). They never exercise the actual
+        // JwtSecurityTokenHandler validation pipeline that production hits — so
+        // they cannot catch a regression where the framework changes claim mapping
+        // and "jti" silently shows up under a different claim type in the principal.
+        //
+        // This test wires AuthService against the REAL TokenService, generates a
+        // genuine signed JWT, then runs it through the refresh flow end-to-end.
+        // If the production read of jti ever fails to find the claim — for any
+        // reason, including framework default changes — this test fails immediately.
+
+        var realTokenService = new TokenService(Options.Create(TestJwtSettings));
+        var sutWithRealTokens = new AuthService(
+            new UserRepository(Context),
+            new UserSessionRepository(Context),
+            new UserPasswordHistoryRepository(Context),
+            new TenantRepository(Context),
+            new MasterUnitOfWork(Context),
+            realTokenService,
+            CacheMock.Object,
+            Options.Create(TestJwtSettings),
+            NullLogger<AuthService>.Instance);
+
+        var (user, tenant, role, permission) = await SeedUserWithRoleAsync();
+
+        // Generate a real JWT with a known jti, then seed a session whose
+        // AccessTokenJti matches it — exactly mirroring what LoginAsync does.
+        var jti = Guid.NewGuid().ToString();
+        var accessToken = realTokenService.GenerateAccessToken(
+            user,
+            new[] { role.Name },
+            new[] { permission.Code },
+            tenant.Code,
+            jti);
+        var refreshToken = realTokenService.GenerateRefreshToken();
+
+        var session = CreateTestSession(user.Id, tenant.Id, refreshToken, jti);
+        await Context.Set<UserSession>().AddAsync(session);
+        await Context.SaveChangesAsync();
+
+        var request = new RefreshTokenRequest(accessToken, refreshToken);
+        var result = await sutWithRealTokens.RefreshTokenAsync(request, tenant.Code);
+
+        // The whole point: refresh must succeed. If it returns Auth.InvalidRefreshToken
+        // here, the jti read is broken (claim mapping or otherwise).
+        Assert.True(
+            result.IsSuccess,
+            $"Refresh failed with {result.Error?.Code}: {result.Error?.Message}. " +
+            "This usually means JwtSecurityTokenHandler claim mapping changed " +
+            "and the jti read in AuthService.RefreshTokenAsync needs another fallback name.");
+
+        // Sanity: session was actually rotated (proves we cleared the JTI gate
+        // and went through the full happy path, not some other code branch).
+        var rotated = await Context.Set<UserSession>().FindAsync(session.Id);
+        Assert.NotEqual(jti, rotated!.AccessTokenJti);
+        Assert.NotEqual(refreshToken, rotated.RefreshToken);
+        Assert.False(rotated.IsRevoked);
     }
 
     [Fact]

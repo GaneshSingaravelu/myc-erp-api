@@ -1,3 +1,4 @@
+using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using ERP.Identity.Abstractions;
 using ERP.Identity.Abstractions.Persistence;
@@ -202,9 +203,14 @@ public abstract class AuthServiceTestBase : IDisposable
         string? securityStamp = null,
         string? jti = null)
     {
+        // Use JWT-native short claim names ("sub", "jti") — production now disables
+        // inbound claim mapping in TokenService.GetPrincipalFromExpiredToken, so the
+        // principal AuthService sees has these short names rather than ClaimTypes URIs.
+        // Keeping the test mock aligned with the production claim contract avoids
+        // false greens where tests pass against names production no longer reads.
         var claims = new List<Claim>
         {
-            new(ClaimTypes.NameIdentifier, userId.ToString())
+            new(JwtRegisteredClaimNames.Sub, userId.ToString())
         };
 
         if (tenantClaim is not null)
@@ -214,7 +220,7 @@ public abstract class AuthServiceTestBase : IDisposable
             claims.Add(new Claim("security_stamp", securityStamp));
 
         if (jti is not null)
-            claims.Add(new Claim("jti", jti));
+            claims.Add(new Claim(JwtRegisteredClaimNames.Jti, jti));
 
         return new ClaimsPrincipal(new ClaimsIdentity(claims, "Test"));
     }
