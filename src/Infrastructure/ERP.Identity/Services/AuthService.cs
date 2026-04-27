@@ -132,15 +132,7 @@ public class AuthService : IAuthService
         user.IsLocked = false;
         user.LockoutEnd = null;
 
-        // Step 4: Get roles and permissions (filter by tenant if needed)
-        var roles = user.UserRoles.Select(ur => ur.Role.Name).ToList();
-        var permissions = user.UserRoles
-            .SelectMany(ur => ur.Role.RolePermissions)
-            .Select(rp => rp.Permission.Code)
-            .Distinct()
-            .ToList();
-
-        // Step 5: Resolve tenant — look up by identifier string or GUID
+        // Step 4: Resolve tenant — look up by identifier string or GUID.
         // SECURITY: Both paths validate tenant existence in the database.
         // Without the GUID path check, an attacker could create sessions
         // for non-existent tenants by passing arbitrary GUIDs.
@@ -160,7 +152,7 @@ public class AuthService : IAuthService
             return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidTenant", "Tenant not found."));
         }
 
-        // Step 5b: Cross-tenant isolation gate — verify the user is an active member of
+        // Step 4b: Cross-tenant isolation gate — verify the user is an active member of
         // this tenant via the UserTenants junction. WITHOUT this check, valid credentials
         // would let any user authenticate into ANY existing tenant by varying the
         // X-Tenant-Id header (cross-tenant authentication / isolation break).
@@ -176,6 +168,18 @@ public class AuthService : IAuthService
                 resolvedTenant.Code);
             return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidCredentials", "Invalid username or password."));
         }
+
+        // Step 5: Build roles and permissions scoped to the resolved tenant.
+        // SECURITY: AppUserRole carries a TenantId — a user can be Admin in Tenant A
+        // and Viewer in Tenant B. Filtering here prevents JWT claims from leaking
+        // roles/permissions from tenants the user did not authenticate into.
+        var tenantUserRoles = user.UserRoles.Where(ur => ur.TenantId == resolvedTenant.Id).ToList();
+        var roles = tenantUserRoles.Select(ur => ur.Role.Name).ToList();
+        var permissions = tenantUserRoles
+            .SelectMany(ur => ur.Role.RolePermissions)
+            .Select(rp => rp.Permission.Code)
+            .Distinct()
+            .ToList();
 
         // Step 6: Generate tokens — JTI must match between token and session for revocation checks.
         // Token claim always uses tenant Code (human-readable), regardless of how the caller addressed it.
@@ -357,12 +361,13 @@ public class AuthService : IAuthService
             return Result.Failure<LoginResponse>(Error.Validation("Auth.SecurityStampChanged", "Security credentials have changed. Please log in again."));
         }
 
-        // Generate new tokens (token rotation) — derive tenant from session, NOT from caller header
-        var roles = user.UserRoles.Select(ur => ur.Role.Name).ToList();
-        var permissions = user.UserRoles.SelectMany(ur => ur.Role.RolePermissions).Select(rp => rp.Permission.Code).Distinct().ToList();
-
-        // Resolve tenant code from session's TenantId for the token claim
+        // Generate new tokens (token rotation) — derive tenant from session, NOT from caller header.
+        // SECURITY: Scope roles/permissions to the session's tenant, same as LoginAsync, so a user
+        // with roles in multiple tenants never receives cross-tenant claims via token refresh.
         var sessionTenant = await _tenants.GetByIdAsync(session.TenantId);
+        var tenantScopedRoles = user.UserRoles.Where(ur => ur.TenantId == session.TenantId).ToList();
+        var roles = tenantScopedRoles.Select(ur => ur.Role.Name).ToList();
+        var permissions = tenantScopedRoles.SelectMany(ur => ur.Role.RolePermissions).Select(rp => rp.Permission.Code).Distinct().ToList();
         var tenantCode = sessionTenant?.Code ?? tenantId;
 
         var newJti = Guid.NewGuid().ToString();

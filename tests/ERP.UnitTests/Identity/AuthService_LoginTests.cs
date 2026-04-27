@@ -1,4 +1,5 @@
 using ERP.Application.Abstractions.Identity.Contracts;
+using ERP.Identity.Abstractions;
 using ERP.Identity.Entities;
 using Microsoft.EntityFrameworkCore;
 using Moq;
@@ -298,5 +299,88 @@ public class AuthService_LoginTests : AuthServiceTestBase
 
         Assert.True(result.IsFailure);
         Assert.Equal("Auth.InvalidCredentials", result.Error.Code);
+    }
+
+    // ─── Tenant-scoped role/permission projection ───
+
+    [Fact]
+    public async Task Login_WhenUserHasRolesInMultipleTenants_TokenContainsOnlyRequestedTenantRoles()
+    {
+        // Arrange: same user, two tenants with different roles
+        var (user, tenantA, roleA, _) = await SeedUserWithRoleAsync(
+            userName: "multiuser", roleName: "Admin", permissionCode: "JOBCARD_CREATE", tenantCode: "AAA");
+
+        var tenantB = CreateTestTenant("BBB");
+        var roleB = new AppRole { Name = "Viewer", NormalizedName = "VIEWER", IsSystemRole = true };
+        var permissionB = new Permission { Code = "JOBCARD_VIEW", Name = "View Job Card", Category = "Production" };
+
+        await Context.Set<Tenant>().AddAsync(tenantB);
+        await Context.Set<AppRole>().AddAsync(roleB);
+        await Context.Set<Permission>().AddAsync(permissionB);
+        await Context.SaveChangesAsync();
+
+        var rpB = new AppRolePermission { RoleId = roleB.Id, PermissionId = permissionB.Id };
+        var urB = new AppUserRole { UserId = user.Id, RoleId = roleB.Id, TenantId = tenantB.Id };
+        var utB = new UserTenant { UserId = user.Id, TenantId = tenantB.Id, IsActive = true };
+
+        await Context.Set<AppRolePermission>().AddAsync(rpB);
+        await Context.Set<AppUserRole>().AddAsync(urB);
+        await Context.Set<UserTenant>().AddAsync(utB);
+        await Context.SaveChangesAsync();
+
+        // Act: log in as tenantB (Viewer)
+        var request = new LoginRequest(user.UserName, "Password@123");
+        var result = await Sut.LoginAsync(request, tenantB.Code);
+
+        Assert.True(result.IsSuccess);
+
+        // Assert: token generation was called with only Viewer role, not Admin
+        var call = TokenServiceMock.Invocations
+            .First(i => i.Method.Name == nameof(ITokenService.GenerateAccessToken));
+        var tokenRoles = (IList<string>)call.Arguments[1];
+        var tokenPermissions = (IList<string>)call.Arguments[2];
+
+        Assert.Contains("Viewer", tokenRoles);
+        Assert.DoesNotContain("Admin", tokenRoles);
+        Assert.Contains("JOBCARD_VIEW", tokenPermissions);
+        Assert.DoesNotContain("JOBCARD_CREATE", tokenPermissions);
+    }
+
+    [Fact]
+    public async Task Login_WhenUserHasRolesInMultipleTenants_TokenContainsOnlyRequestedTenantPermissions()
+    {
+        // Mirror of the roles test — verifies the permission list is also tenant-scoped.
+        var (user, tenantA, _, _) = await SeedUserWithRoleAsync(
+            userName: "permuser", roleName: "Admin", permissionCode: "USER_MANAGE", tenantCode: "T1");
+
+        var tenantB = CreateTestTenant("T2");
+        var roleB = new AppRole { Name = "Operator", NormalizedName = "OPERATOR", IsSystemRole = true };
+        var permB = new Permission { Code = "WORKORDER_CREATE", Name = "Create Work Order", Category = "Production" };
+
+        await Context.Set<Tenant>().AddAsync(tenantB);
+        await Context.Set<AppRole>().AddAsync(roleB);
+        await Context.Set<Permission>().AddAsync(permB);
+        await Context.SaveChangesAsync();
+
+        var rpB = new AppRolePermission { RoleId = roleB.Id, PermissionId = permB.Id };
+        var urB = new AppUserRole { UserId = user.Id, RoleId = roleB.Id, TenantId = tenantB.Id };
+        var utB = new UserTenant { UserId = user.Id, TenantId = tenantB.Id, IsActive = true };
+
+        await Context.Set<AppRolePermission>().AddAsync(rpB);
+        await Context.Set<AppUserRole>().AddAsync(urB);
+        await Context.Set<UserTenant>().AddAsync(utB);
+        await Context.SaveChangesAsync();
+
+        // Log in as T1 (Admin) — must NOT see T2's permissions
+        var result = await Sut.LoginAsync(new LoginRequest(user.UserName, "Password@123"), tenantA.Code);
+
+        Assert.True(result.IsSuccess);
+
+        var call = TokenServiceMock.Invocations
+            .First(i => i.Method.Name == nameof(ITokenService.GenerateAccessToken));
+        var tokenPermissions = (IList<string>)call.Arguments[2];
+
+        Assert.Contains("USER_MANAGE", tokenPermissions);
+        Assert.DoesNotContain("WORKORDER_CREATE", tokenPermissions);
     }
 }
