@@ -1,6 +1,6 @@
 using ERP.SharedKernel.Results;
 
-namespace ERP.Infrastructure.Tenant;
+namespace ERP.Application.Abstractions.MultiTenancy;
 
 /// <summary>
 /// TENANT PROVISIONING SERVICE — Creates and migrates tenant databases.

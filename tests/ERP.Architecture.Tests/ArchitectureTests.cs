@@ -16,7 +16,7 @@ public class ArchitectureTests
     private static readonly Assembly SharedKernelAssembly = typeof(SharedKernel.Entities.BaseEntity).Assembly;
     private static readonly Assembly ApplicationAbstractionsAssembly = typeof(Application.Abstractions.Persistence.IRepository<>).Assembly;
     private static readonly Assembly PersistenceAssembly = typeof(Persistence.Context.AppDbContext).Assembly;
-    private static readonly Assembly IdentityAssembly = typeof(Identity.Services.IAuthService).Assembly;
+    private static readonly Assembly IdentityAssembly = typeof(Identity.Services.AuthService).Assembly;
     private static readonly Assembly InfrastructureAssembly = typeof(Infrastructure.Tenant.TenantMiddleware).Assembly;
 
     // Module assemblies
@@ -196,5 +196,31 @@ public class ArchitectureTests
 
         Assert.True(result.IsSuccessful,
             "ERP.Persistence must not reference ASP.NET Core. Persistence is framework-agnostic.");
+    }
+
+    // ─── IDENTITY SERVICES: repository pattern enforced ───
+
+    [Fact]
+    public void IdentityServices_Should_Not_Depend_On_EfCore()
+    {
+        // Identity services (AuthService, UserService, RoleService, MenuService,
+        // TenantManagementService, …) must talk to the Master DB only through
+        // IUserRepository / IRoleRepository / … + IMasterUnitOfWork. Direct use of
+        // MasterDbContext or EF Core APIs leaks persistence concerns into the service
+        // layer and makes unit-testing require an InMemory DB instead of a mock.
+        var result = Types.InAssembly(IdentityAssembly)
+            .That()
+            .ResideInNamespace("ERP.Identity.Services")
+            .ShouldNot()
+            .HaveDependencyOn("Microsoft.EntityFrameworkCore")
+            .GetResult();
+
+        var offenders = result.FailingTypes?.Select(t => t.Name) ?? Enumerable.Empty<string>();
+
+        Assert.True(result.IsSuccessful,
+            "ERP.Identity.Services types must not depend on Microsoft.EntityFrameworkCore. " +
+            "Use IUserRepository / IRoleRepository / IPermissionRepository / IMenuRepository / " +
+            "IFeatureFlagRepository / ITenantRepository + IMasterUnitOfWork instead. " +
+            $"Offending types: {string.Join(", ", offenders)}");
     }
 }

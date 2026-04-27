@@ -1,8 +1,8 @@
-using ERP.Identity.DTOs;
+using ERP.Application.Abstractions.Identity;
+using ERP.Application.Abstractions.Identity.Contracts;
+using ERP.Identity.Abstractions.Persistence;
 using ERP.Identity.Entities;
-using ERP.Persistence.Context;
 using ERP.SharedKernel.Results;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
 namespace ERP.Identity.Services;
@@ -11,28 +11,36 @@ namespace ERP.Identity.Services;
 /// TENANT MANAGEMENT SERVICE — CRUD operations on tenant records in Master DB.
 ///
 /// This service handles the DATA side of tenants:
-///   - Create/read/update tenant records in MasterDbContext
+///   - Create/read/update tenant records via <see cref="ITenantRepository"/>
 ///   - Validate uniqueness of tenant codes
 ///   - Track user counts
 ///
 /// DATABASE PROVISIONING (DB creation + migration) is handled separately
 /// by ITenantProvisioningService. The controller orchestrates both.
+///
+/// Persistence is committed via <see cref="IMasterUnitOfWork.SaveChangesAsync"/> —
+/// the service holds no EF Core references (enforced by architecture test).
 /// </summary>
 public class TenantManagementService : ITenantManagementService
 {
-    private readonly MasterDbContext _context;
+    private readonly ITenantRepository _tenants;
+    private readonly IMasterUnitOfWork _uow;
     private readonly ILogger<TenantManagementService> _logger;
 
-    public TenantManagementService(MasterDbContext context, ILogger<TenantManagementService> logger)
+    public TenantManagementService(
+        ITenantRepository tenants,
+        IMasterUnitOfWork uow,
+        ILogger<TenantManagementService> logger)
     {
-        _context = context;
+        _tenants = tenants;
+        _uow = uow;
         _logger = logger;
     }
 
     public async Task<Result<TenantResponse>> CreateAsync(CreateTenantRequest request)
     {
         // Validate unique code
-        if (await _context.Set<Tenant>().AnyAsync(t => t.Code == request.Code))
+        if (await _tenants.ExistsByCodeAsync(request.Code))
             return Result.Failure<TenantResponse>(
                 Error.Conflict("Tenant.CodeExists", $"Tenant code '{request.Code}' already exists."));
 
@@ -51,8 +59,8 @@ public class TenantManagementService : ITenantManagementService
             CreatedAt = DateTime.UtcNow
         };
 
-        await _context.Set<Tenant>().AddAsync(tenant);
-        await _context.SaveChangesAsync();
+        await _tenants.AddAsync(tenant);
+        await _uow.SaveChangesAsync();
 
         _logger.LogInformation("Tenant '{TenantCode}' created with ID {TenantId}", tenant.Code, tenant.Id);
 
@@ -61,9 +69,7 @@ public class TenantManagementService : ITenantManagementService
 
     public async Task<Result<TenantResponse>> GetByIdAsync(Guid id)
     {
-        var tenant = await _context.Set<Tenant>()
-            .Include(t => t.UserTenants)
-            .FirstOrDefaultAsync(t => t.Id == id);
+        var tenant = await _tenants.GetByIdWithUserTenantsAsync(id);
 
         if (tenant is null)
             return Result.Failure<TenantResponse>(Error.NotFound("Tenant", id));
@@ -73,8 +79,9 @@ public class TenantManagementService : ITenantManagementService
 
     public async Task<Result<IReadOnlyList<TenantListResponse>>> GetAllAsync()
     {
-        var tenants = await _context.Set<Tenant>()
-            .OrderBy(t => t.Name)
+        var tenants = await _tenants.GetAllAsync();
+
+        var dtos = tenants
             .Select(t => new TenantListResponse(
                 t.Id,
                 t.Code,
@@ -82,16 +89,14 @@ public class TenantManagementService : ITenantManagementService
                 t.DbProvider,
                 t.IsActive,
                 t.CreatedAt))
-            .ToListAsync();
+            .ToList();
 
-        return Result.Success<IReadOnlyList<TenantListResponse>>(tenants);
+        return Result.Success<IReadOnlyList<TenantListResponse>>(dtos);
     }
 
     public async Task<Result<TenantResponse>> UpdateAsync(Guid id, UpdateTenantRequest request)
     {
-        var tenant = await _context.Set<Tenant>()
-            .Include(t => t.UserTenants)
-            .FirstOrDefaultAsync(t => t.Id == id);
+        var tenant = await _tenants.GetByIdWithUserTenantsAsync(id);
 
         if (tenant is null)
             return Result.Failure<TenantResponse>(Error.NotFound("Tenant", id));
@@ -99,7 +104,7 @@ public class TenantManagementService : ITenantManagementService
         tenant.Name = request.Name;
         tenant.IsActive = request.IsActive;
 
-        await _context.SaveChangesAsync();
+        await _uow.SaveChangesAsync();
 
         _logger.LogInformation("Tenant '{TenantCode}' updated", tenant.Code);
 
@@ -108,12 +113,12 @@ public class TenantManagementService : ITenantManagementService
 
     public async Task<Result> DeactivateAsync(Guid id)
     {
-        var tenant = await _context.Set<Tenant>().FindAsync(id);
+        var tenant = await _tenants.GetByIdAsync(id);
         if (tenant is null)
             return Result.Failure(Error.NotFound("Tenant", id));
 
         tenant.IsActive = false;
-        await _context.SaveChangesAsync();
+        await _uow.SaveChangesAsync();
 
         _logger.LogInformation("Tenant '{TenantCode}' deactivated", tenant.Code);
         return Result.Success();

@@ -1,8 +1,8 @@
-using ERP.Identity.DTOs;
+using ERP.Application.Abstractions.Identity;
+using ERP.Application.Abstractions.Identity.Contracts;
+using ERP.Identity.Abstractions.Persistence;
 using ERP.Identity.Entities;
-using ERP.Persistence.Context;
 using ERP.SharedKernel.Results;
-using Microsoft.EntityFrameworkCore;
 
 namespace ERP.Identity.Services;
 
@@ -11,54 +11,48 @@ namespace ERP.Identity.Services;
 ///
 /// FLOW:
 /// ======
-/// 1. Load user's permissions (via roles for the given tenant)
-/// 2. Load all modules + menus + menu permissions
-/// 3. Resolve feature flags for the tenant
+/// 1. Load user's permission codes (via roles for the given tenant)
+/// 2. Load all active modules + visible menus + menu permissions
+/// 3. Resolve feature flags (global defaults + tenant overrides)
 /// 4. Filter: keep menus where user has required permissions AND feature flag is enabled
 /// 5. Build hierarchical tree (modules → top-level menus → children)
 ///
-/// Angular calls this once after login, caches the result in the store.
+/// Angular calls this once after login and caches the result in the store.
+///
+/// Persistence is read-only and delegated entirely to repositories — the service
+/// has no direct EF Core or MasterDbContext reference (enforced by architecture test).
 /// </summary>
 public class MenuService : IMenuService
 {
-    private readonly MasterDbContext _context;
+    private readonly IUserRepository _users;
+    private readonly IMenuRepository _menus;
+    private readonly IFeatureFlagRepository _featureFlags;
 
-    public MenuService(MasterDbContext context)
+    public MenuService(
+        IUserRepository users,
+        IMenuRepository menus,
+        IFeatureFlagRepository featureFlags)
     {
-        _context = context;
+        _users = users;
+        _menus = menus;
+        _featureFlags = featureFlags;
     }
 
     public async Task<Result<IReadOnlyList<ModuleMenuResponse>>> GetMyMenusAsync(Guid userId, Guid? tenantId)
     {
-        // Step 1: Get user's permission codes
-        var userPermissions = await _context.Set<AppUserRole>()
-            .Where(ur => ur.UserId == userId && ur.IsActive)
-            .SelectMany(ur => ur.Role.RolePermissions)
-            .Select(rp => rp.Permission.Code)
-            .Distinct()
-            .ToListAsync();
-
+        // Step 1: Get user's permission codes (distinct across all active roles)
+        var userPermissions = await _users.GetPermissionCodesForUserAsync(userId);
         var permissionSet = userPermissions.ToHashSet();
 
-        // Step 2: Get tenant feature flag overrides
+        // Step 2: Resolve feature flags — tenant overrides first, then global defaults
         var tenantFlags = tenantId.HasValue
-            ? await _context.Set<TenantFeatureFlag>()
-                .Where(tf => tf.TenantId == tenantId.Value)
-                .ToDictionaryAsync(tf => tf.FeatureFlag.Code, tf => tf.IsEnabled)
+            ? await _featureFlags.GetTenantOverridesAsync(tenantId.Value)
             : new Dictionary<string, bool>();
 
-        // Get global feature flags (fallback)
-        var globalFlags = await _context.Set<FeatureFlag>()
-            .ToDictionaryAsync(f => f.Code, f => f.IsEnabled);
+        var globalFlags = await _featureFlags.GetGlobalFlagsAsync();
 
-        // Step 3: Load all active modules with their menus and menu permissions
-        var modules = await _context.Set<Module>()
-            .Where(m => m.IsActive)
-            .Include(m => m.Menus.Where(menu => menu.IsVisible))
-                .ThenInclude(menu => menu.MenuPermissions)
-                    .ThenInclude(mp => mp.Permission)
-            .OrderBy(m => m.DisplayOrder)
-            .ToListAsync();
+        // Step 3: Load all active modules with their visible menus and menu permissions
+        var modules = await _menus.GetActiveModulesWithVisibleMenusAsync();
 
         // Step 4: Filter and build response
         var result = new List<ModuleMenuResponse>();
@@ -87,8 +81,8 @@ public class MenuService : IMenuService
     private static List<MenuItemResponse> FilterMenus(
         ICollection<Menu> allMenus,
         HashSet<string> userPermissions,
-        Dictionary<string, bool> tenantFlags,
-        Dictionary<string, bool> globalFlags)
+        IReadOnlyDictionary<string, bool> tenantFlags,
+        IReadOnlyDictionary<string, bool> globalFlags)
     {
         // First, determine which menus the user can see
         var visibleMenus = allMenus
@@ -106,8 +100,8 @@ public class MenuService : IMenuService
     private static bool IsMenuVisible(
         Menu menu,
         HashSet<string> userPermissions,
-        Dictionary<string, bool> tenantFlags,
-        Dictionary<string, bool> globalFlags)
+        IReadOnlyDictionary<string, bool> tenantFlags,
+        IReadOnlyDictionary<string, bool> globalFlags)
     {
         // Check feature flag (if menu has one)
         if (!string.IsNullOrEmpty(menu.FeatureFlag))

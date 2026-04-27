@@ -1,4 +1,4 @@
-using ERP.Identity.DTOs;
+using ERP.Application.Abstractions.Identity.Contracts;
 using ERP.Identity.Entities;
 using Microsoft.EntityFrameworkCore;
 using Moq;
@@ -256,5 +256,47 @@ public class AuthService_LoginTests : AuthServiceTestBase
         Assert.Equal(user.UserName, dto.UserName);
         Assert.Equal(user.Email, dto.Email);
         Assert.Contains(role.Name, dto.Roles);
+    }
+
+    // ─── Cross-Tenant Isolation Gate (security review finding #1) ───
+
+    [Fact]
+    public async Task Login_WhenUserNotAssignedToTenant_ReturnsInvalidCredentials()
+    {
+        // Build a user in tenant A and a SEPARATE tenant B with no UserTenant link.
+        // The user has valid credentials but is not a member of tenant B — login MUST
+        // fail with the generic InvalidCredentials code (no tenant-membership leak).
+        var (user, _, _, _) = await SeedUserWithRoleAsync(tenantCode: "TENANT_A");
+        var foreignTenant = CreateTestTenant("TENANT_B");
+        await Context.Set<Tenant>().AddAsync(foreignTenant);
+        await Context.SaveChangesAsync();
+
+        var request = new LoginRequest(user.UserName, "Password@123");
+        var result = await Sut.LoginAsync(request, foreignTenant.Code);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Auth.InvalidCredentials", result.Error.Code);
+
+        // No session must be created when membership check fails.
+        var sessionExists = await Context.Set<UserSession>().AnyAsync(s => s.UserId == user.Id);
+        Assert.False(sessionExists);
+    }
+
+    [Fact]
+    public async Task Login_WhenUserTenantMembershipInactive_ReturnsInvalidCredentials()
+    {
+        // Membership row exists but IsActive=false (access revoked) — must be rejected
+        // identically to "never assigned" so attackers can't enumerate revoked accounts.
+        var (user, tenant, _, _) = await SeedUserWithRoleAsync();
+        var membership = await Context.Set<UserTenant>()
+            .FirstAsync(ut => ut.UserId == user.Id && ut.TenantId == tenant.Id);
+        membership.IsActive = false;
+        await Context.SaveChangesAsync();
+
+        var request = new LoginRequest(user.UserName, "Password@123");
+        var result = await Sut.LoginAsync(request, tenant.Code);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Auth.InvalidCredentials", result.Error.Code);
     }
 }

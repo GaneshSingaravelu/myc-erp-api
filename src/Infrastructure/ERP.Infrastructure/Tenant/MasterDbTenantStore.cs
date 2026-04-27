@@ -1,3 +1,4 @@
+using ERP.Application.Abstractions.MultiTenancy;
 using ERP.Identity.Entities;
 using ERP.Persistence.Context;
 using Microsoft.EntityFrameworkCore;

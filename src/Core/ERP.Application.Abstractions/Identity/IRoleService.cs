@@ -1,7 +1,7 @@
-using ERP.Identity.DTOs;
+using ERP.Application.Abstractions.Identity.Contracts;
 using ERP.SharedKernel.Results;
 
-namespace ERP.Identity.Services;
+namespace ERP.Application.Abstractions.Identity;
 
 /// <summary>
 /// ROLE SERVICE — CRUD operations for role management and permission assignment.

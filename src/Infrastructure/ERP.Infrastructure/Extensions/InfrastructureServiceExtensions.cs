@@ -1,5 +1,6 @@
 using ERP.Application.Abstractions.Caching;
 using ERP.Application.Abstractions.Identity;
+using ERP.Application.Abstractions.MultiTenancy;
 using ERP.Infrastructure.Caching;
 using ERP.Infrastructure.Tenant;
 using ERP.Persistence.Context;
@@ -103,7 +104,8 @@ public static class InfrastructureServiceExtensions
 
         services.AddDbContext<MasterDbContext>((sp, options) =>
         {
-            options.UseSqlServer(masterConnectionString);
+            options.UseSqlServer(masterConnectionString, sqlOptions =>
+                sqlOptions.MigrationsAssembly("ERP.Persistence.SqlServer"));
             options.AddInterceptors(
                 sp.GetRequiredService<AuditableEntityInterceptor>(),
                 sp.GetRequiredService<DomainEventDispatcherInterceptor>());

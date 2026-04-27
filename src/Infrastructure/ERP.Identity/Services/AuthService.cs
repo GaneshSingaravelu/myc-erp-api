@@ -1,9 +1,11 @@
+using System.IdentityModel.Tokens.Jwt;
+using ERP.Application.Abstractions.Identity;
+using ERP.Application.Abstractions.Identity.Contracts;
+using ERP.Identity.Abstractions;
+using ERP.Identity.Abstractions.Persistence;
 using ERP.Identity.Configuration;
-using ERP.Identity.DTOs;
 using ERP.Identity.Entities;
-using ERP.Persistence.Context;
 using ERP.SharedKernel.Results;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -27,10 +29,21 @@ namespace ERP.Identity.Services;
 /// - Password history: prevents reuse of last 5 passwords
 /// - Token rotation: each refresh generates a new refresh token (old one is invalidated)
 /// - Multi-device: each login creates a separate session
+///
+/// PERSISTENCE BOUNDARY:
+/// ======================
+/// AuthService talks to the database ONLY through the repository abstractions
+/// (IUserRepository, IUserSessionRepository, IUserPasswordHistoryRepository,
+/// ITenantRepository) and commits via IMasterUnitOfWork. It does NOT reference
+/// EF Core or MasterDbContext directly — Clean Architecture's dependency rule.
 /// </summary>
 public class AuthService : IAuthService
 {
-    private readonly MasterDbContext _context;
+    private readonly IUserRepository _users;
+    private readonly IUserSessionRepository _sessions;
+    private readonly IUserPasswordHistoryRepository _passwordHistory;
+    private readonly ITenantRepository _tenants;
+    private readonly IMasterUnitOfWork _unitOfWork;
     private readonly ITokenService _tokenService;
     private readonly IMemoryCache _cache;
     private readonly JwtSettings _jwtSettings;
@@ -44,13 +57,21 @@ public class AuthService : IAuthService
     private const string JtiCacheKeyPrefix = "jti_valid:";
 
     public AuthService(
-        MasterDbContext context,
+        IUserRepository users,
+        IUserSessionRepository sessions,
+        IUserPasswordHistoryRepository passwordHistory,
+        ITenantRepository tenants,
+        IMasterUnitOfWork unitOfWork,
         ITokenService tokenService,
         IMemoryCache cache,
         IOptions<JwtSettings> jwtSettings,
         ILogger<AuthService> logger)
     {
-        _context = context;
+        _users = users;
+        _sessions = sessions;
+        _passwordHistory = passwordHistory;
+        _tenants = tenants;
+        _unitOfWork = unitOfWork;
         _tokenService = tokenService;
         _cache = cache;
         _jwtSettings = jwtSettings.Value;
@@ -59,14 +80,9 @@ public class AuthService : IAuthService
 
     public async Task<Result<LoginResponse>> LoginAsync(LoginRequest request, string tenantId)
     {
-        // Step 1: Find user by normalized username
+        // Step 1: Find user by normalized username (eager-load roles + permissions for token claims)
         var normalizedUserName = request.UserName.ToUpperInvariant();
-        var user = await _context.Set<AppUser>()
-            .Include(u => u.UserRoles)
-                .ThenInclude(ur => ur.Role)
-                    .ThenInclude(r => r.RolePermissions)
-                        .ThenInclude(rp => rp.Permission)
-            .FirstOrDefaultAsync(u => u.NormalizedUserName == normalizedUserName);
+        var user = await _users.GetByNormalizedUserNameWithRolesAndPermissionsAsync(normalizedUserName);
 
         if (user is null)
         {
@@ -105,7 +121,7 @@ public class AuthService : IAuthService
                 user.LockoutEnd = DateTime.UtcNow.AddMinutes(LockoutMinutes);
                 _logger.LogWarning("User '{UserName}' locked out after {Count} failed attempts", request.UserName, user.AccessFailedCount);
             }
-            await _context.SaveChangesAsync();
+            await _unitOfWork.SaveChangesAsync();
 
             _logger.LogWarning("Login failed: invalid password for '{UserName}'", request.UserName);
             return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidCredentials", "Invalid username or password."));
@@ -128,48 +144,50 @@ public class AuthService : IAuthService
         // SECURITY: Both paths validate tenant existence in the database.
         // Without the GUID path check, an attacker could create sessions
         // for non-existent tenants by passing arbitrary GUIDs.
-        Guid resolvedTenantId;
+        Tenant? resolvedTenant;
         if (Guid.TryParse(tenantId, out var tid))
         {
-            var tenantExists = await _context.Set<Tenant>().AnyAsync(t => t.Id == tid);
-            if (!tenantExists)
-            {
-                _logger.LogWarning("Login failed: tenant GUID '{TenantId}' not found", tenantId);
-                return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidTenant", "Tenant not found."));
-            }
-            resolvedTenantId = tid;
+            resolvedTenant = await _tenants.GetByIdAsync(tid);
         }
         else
         {
-            var tenant = await _context.Set<Tenant>()
-                .FirstOrDefaultAsync(t => t.Code == tenantId);
-            if (tenant is null)
-            {
-                _logger.LogWarning("Login failed: tenant '{TenantId}' not found", tenantId);
-                return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidTenant", "Tenant not found."));
-            }
-            resolvedTenantId = tenant.Id;
+            resolvedTenant = await _tenants.GetByCodeAsync(tenantId);
         }
 
-        // Step 6: Generate tokens — JTI must match between token and session for revocation checks
+        if (resolvedTenant is null)
+        {
+            _logger.LogWarning("Login failed: tenant '{TenantId}' not found", tenantId);
+            return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidTenant", "Tenant not found."));
+        }
+
+        // Step 5b: Cross-tenant isolation gate — verify the user is an active member of
+        // this tenant via the UserTenants junction. WITHOUT this check, valid credentials
+        // would let any user authenticate into ANY existing tenant by varying the
+        // X-Tenant-Id header (cross-tenant authentication / isolation break).
+        //
+        // The error code is intentionally generic ("InvalidCredentials") rather than
+        // "NotAssignedToTenant" so we don't leak tenant-membership info to attackers
+        // probing valid credential / tenant pairings.
+        if (!await _users.IsAssignedToTenantAsync(user.Id, resolvedTenant.Id))
+        {
+            _logger.LogWarning(
+                "Login denied: user '{UserName}' is not an active member of tenant '{TenantCode}'",
+                user.UserName,
+                resolvedTenant.Code);
+            return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidCredentials", "Invalid username or password."));
+        }
+
+        // Step 6: Generate tokens — JTI must match between token and session for revocation checks.
+        // Token claim always uses tenant Code (human-readable), regardless of how the caller addressed it.
         var jti = Guid.NewGuid().ToString();
         var refreshToken = _tokenService.GenerateRefreshToken();
-
-        // Resolve tenant identifier for the token claim (use Code, not GUID)
-        var tenantForClaim = tenantId;
-        if (Guid.TryParse(tenantId, out _))
-        {
-            var tenantEntity = await _context.Set<Tenant>().FindAsync(resolvedTenantId);
-            tenantForClaim = tenantEntity?.Code ?? tenantId;
-        }
-
-        var accessToken = _tokenService.GenerateAccessToken(user, roles, permissions, tenantForClaim, jti);
+        var accessToken = _tokenService.GenerateAccessToken(user, roles, permissions, resolvedTenant.Code, jti);
 
         // Step 7: Create session record (multi-device support)
         var session = new UserSession
         {
             UserId = user.Id,
-            TenantId = resolvedTenantId,
+            TenantId = resolvedTenant.Id,
             RefreshToken = refreshToken,
             RefreshTokenExpiry = DateTime.UtcNow.AddDays(_jwtSettings.RefreshTokenExpirationDays),
             AccessTokenJti = jti,
@@ -177,11 +195,11 @@ public class AuthService : IAuthService
             CreatedAt = DateTime.UtcNow
         };
 
-        await _context.Set<UserSession>().AddAsync(session);
+        await _sessions.AddAsync(session);
         user.LastLoginAt = DateTime.UtcNow;
-        await _context.SaveChangesAsync();
+        await _unitOfWork.SaveChangesAsync();
 
-        _logger.LogInformation("User '{UserName}' logged in successfully for tenant '{TenantId}'", user.UserName, tenantForClaim);
+        _logger.LogInformation("User '{UserName}' logged in successfully for tenant '{TenantId}'", user.UserName, resolvedTenant.Code);
 
         return Result.Success(new LoginResponse(
             AccessToken: accessToken,
@@ -195,10 +213,10 @@ public class AuthService : IAuthService
         var normalizedUserName = request.UserName.ToUpperInvariant();
         var normalizedEmail = request.Email.ToUpperInvariant();
 
-        if (await _context.Set<AppUser>().AnyAsync(u => u.NormalizedUserName == normalizedUserName))
+        if (await _users.ExistsByNormalizedUserNameAsync(normalizedUserName))
             return Result.Failure<UserDto>(Error.Conflict("Auth.UserNameExists", $"Username '{request.UserName}' is already taken."));
 
-        if (await _context.Set<AppUser>().AnyAsync(u => u.NormalizedEmail == normalizedEmail))
+        if (await _users.ExistsByNormalizedEmailAsync(normalizedEmail))
             return Result.Failure<UserDto>(Error.Conflict("Auth.EmailExists", $"Email '{request.Email}' is already registered."));
 
         var user = new AppUser
@@ -213,8 +231,8 @@ public class AuthService : IAuthService
             IsActive = true
         };
 
-        await _context.Set<AppUser>().AddAsync(user);
-        await _context.SaveChangesAsync();
+        await _users.AddAsync(user);
+        await _unitOfWork.SaveChangesAsync();
 
         _logger.LogInformation("User '{UserName}' registered successfully", user.UserName);
         return Result.Success(MapToDto(user, []));
@@ -227,7 +245,16 @@ public class AuthService : IAuthService
         if (principal is null)
             return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidToken", "Invalid access token."));
 
-        var userIdClaim = principal.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+        // Read by JWT-native short name. GetPrincipalFromExpiredToken disables
+        // inbound claim mapping (see TokenService), so "sub" stays "sub" rather
+        // than being remapped to ClaimTypes.NameIdentifier.
+        //
+        // MIGRATION FALLBACK: tokens issued before commit 428d30c carried the user-id
+        // as "nameid" (ClaimTypes.NameIdentifier serialised through the outbound map).
+        // Fall back to that raw name so sessions survive the deploy. Remove this
+        // fallback once the 7-day refresh-token TTL has elapsed post-deploy.
+        var userIdClaim = principal.FindFirst(JwtRegisteredClaimNames.Sub)?.Value
+            ?? principal.FindFirst("nameid")?.Value;
         if (userIdClaim is null || !Guid.TryParse(userIdClaim, out var userId))
             return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidToken", "Invalid token claims."));
 
@@ -237,25 +264,47 @@ public class AuthService : IAuthService
         // 3. Refresh token not expired
         // 4. Absolute session expiry not exceeded (prevents indefinite refresh)
         var now = DateTime.UtcNow;
-        var session = await _context.Set<UserSession>()
-            .FirstOrDefaultAsync(s => s.UserId == userId
-                && s.RefreshToken == request.RefreshToken
-                && !s.IsRevoked
-                && s.RefreshTokenExpiry > now
-                && s.ExpiresAt > now);
+        var session = await _sessions.FindActiveByRefreshTokenAsync(userId, request.RefreshToken, now);
 
         if (session is null)
             return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidRefreshToken", "Invalid or expired refresh token."));
 
-        // SECURITY: Enforce tenant binding — session.TenantId must match the requested tenant
-        // This prevents token replay across tenants (manipulating X-Tenant-Id header)
+        // SECURITY: Bind the access token's jti to this session's AccessTokenJti.
+        // Without this, an attacker holding access token A from session-1 and refresh
+        // token B from session-2 (same user, different devices/sessions) could mix-and-match.
+        // The session was found by refresh token alone — we MUST also verify the access
+        // token presented in the same request actually belongs to that session.
+        //
+        // Reads here use JWT-native short names ("jti", "sub") because
+        // TokenService.GetPrincipalFromExpiredToken disables inbound claim mapping.
+        // That keeps the claim contract explicit and immune to future changes in
+        // JwtSecurityTokenHandler.DefaultInboundClaimTypeMap. The integration test
+        // Refresh_WithRealJwtRoundTrip_FindsJtiClaim asserts the round-trip works
+        // against the real handler, not just hand-built principals.
+        var accessTokenJti = principal.FindFirst(JwtRegisteredClaimNames.Jti)?.Value;
+        if (string.IsNullOrEmpty(accessTokenJti) || accessTokenJti != session.AccessTokenJti)
+        {
+            session.IsRevoked = true;
+            session.RevokedAt = now;
+            session.RevokedReason = "JtiMismatch";
+            await _unitOfWork.SaveChangesAsync();
+            InvalidateJtiCache(session.AccessTokenJti);
+
+            _logger.LogWarning(
+                "Refresh rejected for user {UserId}: access-token jti '{TokenJti}' does not match session jti '{SessionJti}'",
+                userId, accessTokenJti, session.AccessTokenJti);
+            return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidRefreshToken", "Token pair mismatch. Please log in again."));
+        }
+
+        // SECURITY: Enforce tenant binding — session.TenantId must match the requested tenant.
+        // This prevents token replay across tenants (manipulating X-Tenant-Id header).
         var resolvedRequestedTenantId = await ResolveTenantIdAsync(tenantId);
         if (resolvedRequestedTenantId is null || session.TenantId != resolvedRequestedTenantId.Value)
         {
             session.IsRevoked = true;
             session.RevokedAt = now;
             session.RevokedReason = "TenantMismatch";
-            await _context.SaveChangesAsync();
+            await _unitOfWork.SaveChangesAsync();
             InvalidateJtiCache(session.AccessTokenJti);
 
             _logger.LogWarning("Refresh rejected for user {UserId}: tenant mismatch (session={SessionTenant}, requested={RequestedTenant})",
@@ -273,7 +322,7 @@ public class AuthService : IAuthService
                 session.IsRevoked = true;
                 session.RevokedAt = now;
                 session.RevokedReason = "TokenTenantMismatch";
-                await _context.SaveChangesAsync();
+                await _unitOfWork.SaveChangesAsync();
                 InvalidateJtiCache(session.AccessTokenJti);
 
                 _logger.LogWarning("Refresh rejected for user {UserId}: token tenant_id claim doesn't match session", userId);
@@ -282,19 +331,14 @@ public class AuthService : IAuthService
         }
 
         // Load user with roles and permissions
-        var user = await _context.Set<AppUser>()
-            .Include(u => u.UserRoles)
-                .ThenInclude(ur => ur.Role)
-                    .ThenInclude(r => r.RolePermissions)
-                        .ThenInclude(rp => rp.Permission)
-            .FirstOrDefaultAsync(u => u.Id == userId);
+        var user = await _users.GetByIdWithRolesAndPermissionsAsync(userId);
 
         if (user is null || !user.IsActive)
         {
             session.IsRevoked = true;
             session.RevokedAt = now;
             session.RevokedReason = "UserInactive";
-            await _context.SaveChangesAsync();
+            await _unitOfWork.SaveChangesAsync();
             InvalidateJtiCache(session.AccessTokenJti);
             return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidRefreshToken", "User not found or inactive."));
         }
@@ -306,7 +350,7 @@ public class AuthService : IAuthService
             session.IsRevoked = true;
             session.RevokedAt = now;
             session.RevokedReason = "SecurityStampChanged";
-            await _context.SaveChangesAsync();
+            await _unitOfWork.SaveChangesAsync();
             InvalidateJtiCache(session.AccessTokenJti);
 
             _logger.LogWarning("Refresh rejected for user '{UserName}': SecurityStamp mismatch", user.UserName);
@@ -318,7 +362,7 @@ public class AuthService : IAuthService
         var permissions = user.UserRoles.SelectMany(ur => ur.Role.RolePermissions).Select(rp => rp.Permission.Code).Distinct().ToList();
 
         // Resolve tenant code from session's TenantId for the token claim
-        var sessionTenant = await _context.Set<Tenant>().FindAsync(session.TenantId);
+        var sessionTenant = await _tenants.GetByIdAsync(session.TenantId);
         var tenantCode = sessionTenant?.Code ?? tenantId;
 
         var newJti = Guid.NewGuid().ToString();
@@ -334,7 +378,7 @@ public class AuthService : IAuthService
         session.AccessTokenJti = newJti;
         session.LastAccessedAt = now;
 
-        await _context.SaveChangesAsync();
+        await _unitOfWork.SaveChangesAsync();
         InvalidateJtiCache(oldJti);
 
         return Result.Success(new LoginResponse(
@@ -346,10 +390,7 @@ public class AuthService : IAuthService
 
     public async Task<Result> LogoutAsync(Guid userId, string refreshToken)
     {
-        var session = await _context.Set<UserSession>()
-            .FirstOrDefaultAsync(s => s.UserId == userId
-                && s.RefreshToken == refreshToken
-                && !s.IsRevoked);
+        var session = await _sessions.FindNonRevokedByRefreshTokenAsync(userId, refreshToken);
 
         if (session is null)
             return Result.Success(); // Already logged out or invalid — idempotent
@@ -358,10 +399,10 @@ public class AuthService : IAuthService
         session.RevokedAt = DateTime.UtcNow;
         session.RevokedReason = "Logout";
 
-        await _context.SaveChangesAsync();
+        await _unitOfWork.SaveChangesAsync();
 
-        // Immediately invalidate the JTI cache so the access token is rejected on next request
-        // Without this, the token would remain valid for up to the cache TTL (2 min)
+        // Immediately invalidate the JTI cache so the access token is rejected on next request.
+        // Without this, the token would remain valid for up to the cache TTL (2 min).
         InvalidateJtiCache(session.AccessTokenJti);
 
         _logger.LogInformation("Session revoked for user {UserId}", userId);
@@ -371,7 +412,7 @@ public class AuthService : IAuthService
 
     public async Task<Result> ChangePasswordAsync(Guid userId, string currentPassword, string newPassword)
     {
-        var user = await _context.Set<AppUser>().FindAsync(userId);
+        var user = await _users.GetByIdAsync(userId);
         if (user is null)
             return Result.Failure(Error.NotFound("User", userId));
 
@@ -379,11 +420,7 @@ public class AuthService : IAuthService
             return Result.Failure(Error.Validation("Auth.InvalidPassword", "Current password is incorrect."));
 
         // Check password history — prevent reuse of last N passwords
-        var recentPasswords = await _context.Set<UserPasswordHistory>()
-            .Where(h => h.UserId == userId)
-            .OrderByDescending(h => h.ChangedAt)
-            .Take(PasswordHistoryCount)
-            .ToListAsync();
+        var recentPasswords = await _passwordHistory.GetRecentForUserAsync(userId, PasswordHistoryCount);
 
         if (recentPasswords.Any(h => BCrypt.Net.BCrypt.Verify(newPassword, h.PasswordHash)))
             return Result.Failure(Error.Validation("Auth.PasswordReused",
@@ -394,7 +431,7 @@ public class AuthService : IAuthService
             return Result.Failure(Error.Validation("Auth.PasswordReused", "New password cannot be the same as the current password."));
 
         // Store old password in history
-        _context.Set<UserPasswordHistory>().Add(new UserPasswordHistory
+        await _passwordHistory.AddAsync(new UserPasswordHistory
         {
             UserId = user.Id,
             PasswordHash = user.PasswordHash,
@@ -408,9 +445,7 @@ public class AuthService : IAuthService
         user.MustChangePassword = false;
 
         // Revoke ALL active sessions (force re-login on all devices)
-        var activeSessions = await _context.Set<UserSession>()
-            .Where(s => s.UserId == userId && !s.IsRevoked)
-            .ToListAsync();
+        var activeSessions = await _sessions.GetActiveSessionsForUserAsync(userId);
 
         foreach (var session in activeSessions)
         {
@@ -419,7 +454,7 @@ public class AuthService : IAuthService
             session.RevokedReason = "PasswordChanged";
         }
 
-        await _context.SaveChangesAsync();
+        await _unitOfWork.SaveChangesAsync();
 
         // Immediately invalidate all JTI cache entries so access tokens are rejected on next request
         foreach (var session in activeSessions)
@@ -450,12 +485,11 @@ public class AuthService : IAuthService
     {
         if (Guid.TryParse(tenantIdOrCode, out var guid))
         {
-            var exists = await _context.Set<Tenant>().AnyAsync(t => t.Id == guid);
+            var exists = await _tenants.ExistsByIdAsync(guid);
             return exists ? guid : null;
         }
 
-        var tenant = await _context.Set<Tenant>()
-            .FirstOrDefaultAsync(t => t.Code == tenantIdOrCode);
+        var tenant = await _tenants.GetByCodeAsync(tenantIdOrCode);
         return tenant?.Id;
     }
 

@@ -16,32 +16,44 @@ Supports multi-tenant, multi-database-provider architecture for manufacturing co
 ## Solution Structure
 
 ```
-ERP.slnx                              ← .NET 10 SDK format (builds net8.0 targets)
+ERP.slnx                              ← .NET 10 SDK format, all projects target net10.0
 ├── src/Core/
-│   ├── ERP.SharedKernel/              ← Base entities, ValueObject, Result<T>, Guards, DomainEvents
-│   └── ERP.Application.Abstractions/ ← ICommand, IQuery, IRepository, IUnitOfWork, Behaviors
+│   ├── ERP.SharedKernel/                          ← Base entities, ValueObject, Result<T>, Guards, DomainEvents
+│   └── ERP.Application.Abstractions/              ← ICommand, IQuery, IRepository, IUnitOfWork, Behaviors
+│       ├── Identity/                              ← IAuthService, IUserService, IRoleService, IMenuService,
+│       │   │                                        ITenantManagementService, ICurrentUserService
+│       │   └── Contracts/                         ← AuthDtos, MenuDtos, TenantDtos (request/response records)
+│       └── MultiTenancy/                          ← ITenantProvider, ITenantStore, ITenantProvisioningService, TenantInfo
 ├── src/Infrastructure/
-│   ├── ERP.Persistence/              ← AppDbContext, Repository<T>, UnitOfWork, Interceptors
-│   ├── ERP.Persistence.SqlServer/    ← SQL Server provider + migrations assembly
-│   ├── ERP.Persistence.PostgreSql/   ← PostgreSQL provider + migrations assembly
-│   ├── ERP.Infrastructure/           ← TenantMiddleware, TenantDbContextFactory, CacheService
-│   ├── ERP.Identity/                 ← JWT TokenService, AppUser, AppRole, Permission entities
-│   └── ERP.Notifications/           ← SignalR ErpNotificationHub
+│   ├── ERP.Persistence/                           ← AppDbContext, Repository<T>, UnitOfWork, Interceptors
+│   ├── ERP.Persistence.SqlServer/                 ← SQL Server provider + migrations assembly
+│   ├── ERP.Persistence.PostgreSql/                ← PostgreSQL provider + migrations assembly
+│   ├── ERP.Infrastructure/                        ← TenantMiddleware, TenantDbContextFactory, CacheService
+│   ├── ERP.Identity/                              ← Services + repositories + entities (JWT, AppUser, AppRole, Permission)
+│   │   ├── Abstractions/Persistence/              ← IUserRepository, IRoleRepository, IPermissionRepository,
+│   │   │                                            IMenuRepository, IFeatureFlagRepository, ITenantRepository,
+│   │   │                                            IUserSessionRepository, IUserPasswordHistoryRepository,
+│   │   │                                            IMasterUnitOfWork
+│   │   ├── Persistence/                           ← Concrete repositories + MasterUnitOfWork (only place that touches MasterDbContext)
+│   │   └── Services/                              ← AuthService, UserService, RoleService, MenuService,
+│   │                                                TenantManagementService, TokenService (zero EF Core refs — guarded)
+│   └── ERP.Notifications/                         ← SignalR ErpNotificationHub
 ├── src/Modules/
 │   ├── Workflow/{Domain,Application,Infrastructure,Api}/  ← Process template engine
 │   └── Production/{Domain,Application,Infrastructure,Api}/ ← Work orders, job cards
 ├── src/Host/
-│   └── ERP.Api/                      ← Composition root (Program.cs), Middleware, appsettings
+│   └── ERP.Api/                                   ← Composition root (Program.cs), Controllers/v1, Middleware, appsettings
 ├── tests/
 │   ├── ERP.UnitTests/
-│   └── ERP.Architecture.Tests/
+│   │   └── Identity/                              ← AuthServiceTestBase + IdentityServiceTestBase + 99 tests
+│   └── ERP.Architecture.Tests/                    ← 13 NetArchTest guards (incl. IdentityServices_Should_Not_Depend_On_EfCore)
 ├── tools/
-│   └── ERP.DbMigrator/              ← Console app for applying migrations
+│   └── ERP.DbMigrator/                            ← Console app for applying migrations
 └── docs/
-    ├── DESIGN_PATTERNS.md            ← 20 patterns explained with interview tips
-    ├── ARCHITECTURE.md               ← 20 concepts explained with code examples
-    ├── DATABASE_ARCHITECTURE.md      ← Complete table definitions, relationships, data flow
-    └── TENANT_PROVISIONING.md        ← How to create & migrate tenants (manual + API)
+    ├── DESIGN_PATTERNS.md                         ← 20 patterns explained with interview tips
+    ├── ARCHITECTURE.md                            ← 20 concepts explained with code examples
+    ├── DATABASE_ARCHITECTURE.md                   ← Complete table definitions, relationships, data flow
+    └── TENANT_PROVISIONING.md                     ← How to create & migrate tenants (manual + API)
 ```
 
 ## Architecture Decisions (ADRs)
@@ -88,8 +100,11 @@ ERP.slnx                              ← .NET 10 SDK format (builds net8.0 targ
 
 ### 6. DB Abstraction: Clear Separation
 - `ERP.SharedKernel` → entities (ZERO EF Core reference)
-- `ERP.Application.Abstractions` → interfaces (IRepository, IUnitOfWork)
-- `ERP.Persistence` → implementations (Repository<T>, UnitOfWork, AppDbContext)
+- `ERP.Application.Abstractions` → interfaces (IRepository, IUnitOfWork) + Identity service contracts + DTOs
+- `ERP.Persistence` → generic implementations (Repository<T>, UnitOfWork, AppDbContext) for tenant business data
+- `ERP.Identity.Abstractions.Persistence` → specialized identity repository interfaces (IUserRepository, IRoleRepository, IMenuRepository, IFeatureFlagRepository, ITenantRepository, IUserSessionRepository, IUserPasswordHistoryRepository, IPermissionRepository, IMasterUnitOfWork)
+- `ERP.Identity.Persistence` → concrete implementations — the ONLY place in `ERP.Identity` that touches `MasterDbContext`
+- Identity services (AuthService/UserService/RoleService/MenuService/TenantManagementService) depend only on repositories + IMasterUnitOfWork — zero EF Core references, enforced by `IdentityServices_Should_Not_Depend_On_EfCore` architecture test
 - Business logic NEVER touches DbContext directly
 
 ### 7. Authentication: JWT (Custom, NOT ASP.NET Core Identity)
@@ -123,7 +138,7 @@ ERP.slnx                              ← .NET 10 SDK format (builds net8.0 targ
 
 ### DI Lifetimes
 - **Singleton:** ICacheService, ITokenService
-- **Scoped:** MasterDbContext, AppDbContext, IRepository<T>, IUnitOfWork, ITenantProvider, ITenantStore, ICurrentUserService, ITenantManagementService, ITenantProvisioningService
+- **Scoped:** MasterDbContext, AppDbContext, IRepository<T>, IUnitOfWork, IMasterUnitOfWork, all Identity repositories (IUserRepository, IRoleRepository, IPermissionRepository, IMenuRepository, IFeatureFlagRepository, ITenantRepository, IUserSessionRepository, IUserPasswordHistoryRepository), ITenantProvider, ITenantStore, ICurrentUserService, IAuthService, IUserService, IRoleService, IMenuService, ITenantManagementService, ITenantProvisioningService
 - **Transient:** (not used currently)
 
 ### Project References (Dependency Rule)
@@ -177,10 +192,62 @@ dotnet test ERP.slnx
 - [x] Phase 2.5D: Dynamic menu API (permission-filtered sidebar)
 - [x] Phase 2.5E: Tenant DB additions (Plants, UserPlantAccess, UserPreferences, AuditLogs)
 - [x] Phase 2.5F: API smoke testing (all auth/authz/multi-tenant scenarios)
-- [ ] Phase 2.5G: Angular integration (auth service, interceptor, sidebar, permission directive)
+- [x] Phase 2.5G: Angular integration (NgRx Signal Store, AuthStore, MenuStore, JWT/X-Tenant interceptors, dynamic sidebar) — merged in `myc-erp-demo` repo
+- [x] Phase 2.5W: AuthService unit tests (51 tests) — PR #3 merged
+- [x] Phase 2.5X: Identity services repository refactor (User/Role/Menu/TenantManagement) + IdentityServiceTestBase + 47 new unit tests + architecture guard — **uncommitted on `main`**
+- [ ] Pre-Phase 3: Angular fixes (login UI, tenant dropdown UX, stale-token guard, login page layout) — see "Pre-Phase 3 Punch List" below
+- [ ] Phase 2.5Y: Graphify A/B token-cost analysis (parked, user-driven)
 - [ ] Phase 3: SignalR integration (job card status, QA alerts)
 - [ ] Phase 4: Reporting (open-source, Angular-compatible)
 - [ ] Phase 5: Additional modules (Finance, Sales, HR — process templates)
+
+### Pre-Phase 3 Punch List (Angular — `myc-erp-demo`)
+
+1. **Login page broken** — submit button missing, layout/styling issues. Full UI fix + manual smoke test.
+2. **Tenant field UX** — add `IsTenantSelectionRequired` config flag.
+   - If false → hide field, use default tenant
+   - If true → render as **dropdown** (not textbox), populated from a public "list available tenants" endpoint or embedded app config
+3. **Stale localStorage token bypasses guard** — `AuthStore.isLoggedIn()` returns true for any token (incl. `dummy-token` from old dev sessions). Decode JWT and check `exp` claim in the guard.
+4. **Login page renders inside WebLayoutComponent** — sidebar/navbar shouldn't appear on login. Move login under a full-page layout.
+
+### Phase 2.5X — What Landed (uncommitted, fully tested)
+
+**New abstractions** (`src/Core/ERP.Application.Abstractions/Identity/`):
+- `Contracts/AuthDtos.cs`, `Contracts/MenuDtos.cs`, `Contracts/TenantDtos.cs` — request/response records moved out of Identity assembly
+- `IAuthService.cs`, `IUserService.cs`, `IRoleService.cs`, `IMenuService.cs`, `ITenantManagementService.cs` — service contracts now live with the other Application interfaces
+
+**New abstractions** (`src/Core/ERP.Application.Abstractions/MultiTenancy/`):
+- `ITenantProvider.cs`, `ITenantStore.cs`, `ITenantProvisioningService.cs`, `TenantInfo.cs` — multi-tenancy contracts hoisted out of `ERP.Infrastructure`
+
+**New repository layer** (`src/Infrastructure/ERP.Identity/Abstractions/Persistence/` + `Persistence/`):
+- `IUserRepository` / `UserRepository` — user lookups w/ Include chains for roles+permissions+tenants
+- `IRoleRepository` / `RoleRepository` — role queries + permission-assignment helpers
+- `IPermissionRepository` / `PermissionRepository` — permission lookups + ordered-by-category catalog
+- `IMenuRepository` / `MenuRepository` — `GetActiveModulesWithVisibleMenusAsync` (Module → Menus filtered by IsVisible → MenuPermissions → Permission)
+- `IFeatureFlagRepository` / `FeatureFlagRepository` — `GetGlobalFlagsAsync`, `GetTenantOverridesAsync` returning `IReadOnlyDictionary<string,bool>`
+- `ITenantRepository` / `TenantRepository` — extended with `ExistsByCodeAsync`, `GetByIdWithUserTenantsAsync`, `GetAllAsync`, `AddAsync`
+- `IUserSessionRepository`, `IUserPasswordHistoryRepository` (already existed for AuthService)
+- `IMasterUnitOfWork` / `MasterUnitOfWork` — wraps `MasterDbContext.SaveChangesAsync()`
+
+**Refactored services** (`src/Infrastructure/ERP.Identity/Services/`):
+- `UserService`, `RoleService`, `MenuService`, `TenantManagementService` rewritten to depend only on repositories + `IMasterUnitOfWork` — **zero EF Core references**
+
+**Architecture guard** (`tests/ERP.Architecture.Tests/ArchitectureTests.cs`):
+- New `IdentityServices_Should_Not_Depend_On_EfCore` test pins `ERP.Identity.Services` namespace to forbid `Microsoft.EntityFrameworkCore` — prevents regression
+
+**Test foundation** (`tests/ERP.UnitTests/Identity/`):
+- `IdentityServiceTestBase.cs` — shared base with InMemory `MasterDbContext` + all 6 identity repositories + `MasterUnitOfWork` + `AuditableEntityInterceptor` (mocked `ICurrentUserService`); seed helpers `CreateTestUser/Role/Permission/Tenant` + `PersistAsync<T>`
+- `UserServiceTests.cs` (11 tests), `RoleServiceTests.cs` (12), `MenuServiceTests.cs` (8), `TenantManagementServiceTests.cs` (10)
+
+**Test suite status:** 13/13 architecture + 99/99 unit tests passing (was 12/12 + 52/52 before this work).
+
+**Error code convention:** `Error.NotFound("Entity", id)` produces code `"{Entity}.NotFound"` — e.g. `"User.NotFound"`, `"Role.NotFound"`, `"Permission.NotFound"`, `"Tenant.NotFound"`. Tests assert against these full codes.
+
+### Suggested Next Action (when you resume)
+
+1. Commit Phase 2.5X with a descriptive message + open PR (current diff is large but cohesive — single "Identity services repository refactor" commit recommended)
+2. Tackle Pre-Phase 3 Angular punch list in `myc-erp-demo`
+3. Then Phase 3 SignalR (job card status broadcasts, QA alerts, tenant-scoped hub groups)
 
 ## Important Notes
 

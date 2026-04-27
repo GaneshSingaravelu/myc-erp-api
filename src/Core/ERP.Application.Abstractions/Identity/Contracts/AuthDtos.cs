@@ -1,4 +1,4 @@
-namespace ERP.Identity.DTOs;
+namespace ERP.Application.Abstractions.Identity.Contracts;
 
 /// <summary>
 /// DATA TRANSFER OBJECTS (DTOs) for Authentication.

@@ -1,6 +1,10 @@
+using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
+using ERP.Identity.Abstractions;
+using ERP.Identity.Abstractions.Persistence;
 using ERP.Identity.Configuration;
 using ERP.Identity.Entities;
+using ERP.Identity.Persistence;
 using ERP.Identity.Services;
 using ERP.Persistence.Context;
 using Microsoft.EntityFrameworkCore;
@@ -67,8 +71,23 @@ public abstract class AuthServiceTestBase : IDisposable
                 It.IsAny<IList<string>>(), It.IsAny<string>(), It.IsAny<string>()))
             .Returns("mock-access-token");
 
+        // Wire real repository implementations over the InMemory context.
+        // This keeps the test investment in seeded graphs (SeedUserWithRoleAsync, etc.)
+        // while still verifying AuthService against the refactored repository contracts.
+        // All repositories share the same DbContext instance → IMasterUnitOfWork.SaveChangesAsync
+        // commits changes staged through any of them in a single EF Core SaveChanges call.
+        var users = new UserRepository(Context);
+        var sessions = new UserSessionRepository(Context);
+        var passwordHistory = new UserPasswordHistoryRepository(Context);
+        var tenants = new TenantRepository(Context);
+        var unitOfWork = new MasterUnitOfWork(Context);
+
         Sut = new AuthService(
-            Context,
+            users,
+            sessions,
+            passwordHistory,
+            tenants,
+            unitOfWork,
             TokenServiceMock.Object,
             CacheMock.Object,
             Options.Create(TestJwtSettings),
@@ -139,9 +158,14 @@ public abstract class AuthServiceTestBase : IDisposable
 
         var rolePermission = new AppRolePermission { RoleId = role.Id, PermissionId = permission.Id };
         var userRole = new AppUserRole { UserId = user.Id, RoleId = role.Id, TenantId = tenant.Id };
+        // UserTenant is the cross-tenant isolation gate enforced at login. Production
+        // seeds it for every user-tenant assignment, so happy-path tests must too —
+        // otherwise the new IUserRepository.IsAssignedToTenantAsync check rejects login.
+        var userTenant = new UserTenant { UserId = user.Id, TenantId = tenant.Id, IsActive = true };
 
         await Context.Set<AppRolePermission>().AddAsync(rolePermission);
         await Context.Set<AppUserRole>().AddAsync(userRole);
+        await Context.Set<UserTenant>().AddAsync(userTenant);
         await Context.SaveChangesAsync();
 
         return (user, tenant, role, permission);
@@ -179,9 +203,14 @@ public abstract class AuthServiceTestBase : IDisposable
         string? securityStamp = null,
         string? jti = null)
     {
+        // Use JWT-native short claim names ("sub", "jti") — production now disables
+        // inbound claim mapping in TokenService.GetPrincipalFromExpiredToken, so the
+        // principal AuthService sees has these short names rather than ClaimTypes URIs.
+        // Keeping the test mock aligned with the production claim contract avoids
+        // false greens where tests pass against names production no longer reads.
         var claims = new List<Claim>
         {
-            new(ClaimTypes.NameIdentifier, userId.ToString())
+            new(JwtRegisteredClaimNames.Sub, userId.ToString())
         };
 
         if (tenantClaim is not null)
@@ -191,7 +220,7 @@ public abstract class AuthServiceTestBase : IDisposable
             claims.Add(new Claim("security_stamp", securityStamp));
 
         if (jti is not null)
-            claims.Add(new Claim("jti", jti));
+            claims.Add(new Claim(JwtRegisteredClaimNames.Jti, jti));
 
         return new ClaimsPrincipal(new ClaimsIdentity(claims, "Test"));
     }

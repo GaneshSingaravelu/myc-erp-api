@@ -1,3 +1,4 @@
+using ERP.Application.Abstractions.MultiTenancy;
 using Microsoft.AspNetCore.Http;
 
 namespace ERP.Infrastructure.Tenant;

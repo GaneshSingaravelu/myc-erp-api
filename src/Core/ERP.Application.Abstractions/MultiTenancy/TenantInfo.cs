@@ -1,4 +1,4 @@
-namespace ERP.Infrastructure.Tenant;
+namespace ERP.Application.Abstractions.MultiTenancy;
 
 /// <summary>
 /// TENANT INFO — Holds all information about a tenant (company/client).

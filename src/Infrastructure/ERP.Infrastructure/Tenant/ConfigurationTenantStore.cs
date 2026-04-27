@@ -1,3 +1,4 @@
+using ERP.Application.Abstractions.MultiTenancy;
 using Microsoft.Extensions.Configuration;
 
 namespace ERP.Infrastructure.Tenant;

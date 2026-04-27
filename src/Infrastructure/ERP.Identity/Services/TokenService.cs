@@ -2,6 +2,7 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
+using ERP.Identity.Abstractions;
 using ERP.Identity.Configuration;
 using ERP.Identity.Entities;
 using Microsoft.Extensions.Options;
@@ -51,9 +52,20 @@ public class TokenService : ITokenService
         // Step 1: Create claims (data stored in the token)
         // JTI is provided by the caller so it matches the UserSession.AccessTokenJti
         // This enables request-time revocation by checking jti against active sessions
+        //
+        // Use JWT-native short names (sub, jti) for the registered claims rather
+        // than ClaimTypes.* URIs. JwtSecurityTokenHandler's DefaultOutboundClaimTypeMap
+        // would normally remap ClaimTypes.NameIdentifier → "nameid" (a SAML-era choice),
+        // but the OIDC spec — and the rest of this codebase — expects "sub". Writing
+        // the short name directly skips outbound mapping for this claim and keeps the
+        // JWT payload predictable: refresh-flow validation (with inbound mapping
+        // disabled) reads "sub" verbatim, and the production JWT bearer middleware
+        // (with default inbound mapping) still resolves "sub" → ClaimTypes.NameIdentifier.
+        // ClaimTypes.Name / ClaimTypes.Email are kept as-is — neither is read in any
+        // security-critical path; outbound mapping → "unique_name" / "email" is fine.
         var claims = new List<Claim>
         {
-            new(ClaimTypes.NameIdentifier, user.Id.ToString()),
+            new(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
             new(ClaimTypes.Name, user.UserName),
             new(ClaimTypes.Email, user.Email),
             new("tenant_id", tenantId),
@@ -108,7 +120,12 @@ public class TokenService : ITokenService
                 Encoding.UTF8.GetBytes(_jwtSettings.SecretKey))
         };
 
-        var tokenHandler = new JwtSecurityTokenHandler();
+        // MapInboundClaims = false keeps JWT-native short names ("sub", "jti", "exp")
+        // in the resulting principal instead of remapping them to ClaimTypes URIs.
+        // This makes the claim contract explicit at every read site in AuthService
+        // and immune to changes in JwtSecurityTokenHandler.DefaultInboundClaimTypeMap
+        // between framework versions — a real PR-review concern flagged on this file.
+        var tokenHandler = new JwtSecurityTokenHandler { MapInboundClaims = false };
         var principal = tokenHandler.ValidateToken(token, validationParameters, out var securityToken);
 
         // Verify the token was signed with our algorithm

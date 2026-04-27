@@ -1,25 +1,37 @@
-using ERP.Identity.DTOs;
+using ERP.Application.Abstractions.Identity;
+using ERP.Application.Abstractions.Identity.Contracts;
+using ERP.Identity.Abstractions.Persistence;
 using ERP.Identity.Entities;
-using ERP.Persistence.Context;
 using ERP.SharedKernel.Results;
-using Microsoft.EntityFrameworkCore;
 
 namespace ERP.Identity.Services;
 
+/// <summary>
+/// User management service (admin CRUD + role assignment).
+///
+/// Persistence goes through <see cref="IUserRepository"/> and <see cref="IRoleRepository"/>;
+/// commits happen via <see cref="IMasterUnitOfWork.SaveChangesAsync"/>. The service holds
+/// no EF Core references — that's enforced by the Identity architecture test.
+/// </summary>
 public class UserService : IUserService
 {
-    private readonly MasterDbContext _context;
+    private readonly IUserRepository _users;
+    private readonly IRoleRepository _roles;
+    private readonly IMasterUnitOfWork _uow;
 
-    public UserService(MasterDbContext context)
+    public UserService(
+        IUserRepository users,
+        IRoleRepository roles,
+        IMasterUnitOfWork uow)
     {
-        _context = context;
+        _users = users;
+        _roles = roles;
+        _uow = uow;
     }
 
     public async Task<Result<UserDto>> GetByIdAsync(Guid id)
     {
-        var user = await _context.Set<AppUser>()
-            .Include(u => u.UserRoles).ThenInclude(ur => ur.Role)
-            .FirstOrDefaultAsync(u => u.Id == id);
+        var user = await _users.GetByIdWithRolesAsync(id);
 
         if (user is null)
             return Result.Failure<UserDto>(Error.NotFound("User", id));
@@ -29,11 +41,7 @@ public class UserService : IUserService
 
     public async Task<Result<IReadOnlyList<UserDto>>> GetAllAsync()
     {
-        var users = await _context.Set<AppUser>()
-            .Include(u => u.UserRoles).ThenInclude(ur => ur.Role)
-            .OrderBy(u => u.UserName)
-            .ToListAsync();
-
+        var users = await _users.GetAllWithRolesAsync();
         return Result.Success<IReadOnlyList<UserDto>>(users.Select(MapToDto).ToList());
     }
 
@@ -42,10 +50,10 @@ public class UserService : IUserService
         var normalizedUserName = request.UserName.ToUpperInvariant();
         var normalizedEmail = request.Email.ToUpperInvariant();
 
-        if (await _context.Set<AppUser>().AnyAsync(u => u.NormalizedUserName == normalizedUserName))
+        if (await _users.ExistsByNormalizedUserNameAsync(normalizedUserName))
             return Result.Failure<UserDto>(Error.Conflict("User.UserNameExists", $"Username '{request.UserName}' already exists."));
 
-        if (await _context.Set<AppUser>().AnyAsync(u => u.NormalizedEmail == normalizedEmail))
+        if (await _users.ExistsByNormalizedEmailAsync(normalizedEmail))
             return Result.Failure<UserDto>(Error.Conflict("User.EmailExists", $"Email '{request.Email}' already exists."));
 
         var user = new AppUser
@@ -60,17 +68,15 @@ public class UserService : IUserService
             IsActive = true
         };
 
-        await _context.Set<AppUser>().AddAsync(user);
-        await _context.SaveChangesAsync();
+        await _users.AddAsync(user);
+        await _uow.SaveChangesAsync();
 
         return Result.Success(MapToDto(user));
     }
 
     public async Task<Result<UserDto>> UpdateAsync(Guid id, UpdateUserRequest request)
     {
-        var user = await _context.Set<AppUser>()
-            .Include(u => u.UserRoles).ThenInclude(ur => ur.Role)
-            .FirstOrDefaultAsync(u => u.Id == id);
+        var user = await _users.GetByIdWithRolesAsync(id);
 
         if (user is null)
             return Result.Failure<UserDto>(Error.NotFound("User", id));
@@ -81,46 +87,43 @@ public class UserService : IUserService
         user.LastName = request.LastName;
         user.IsActive = request.IsActive;
 
-        await _context.SaveChangesAsync();
+        await _uow.SaveChangesAsync();
 
         return Result.Success(MapToDto(user));
     }
 
     public async Task<Result> DeleteAsync(Guid id)
     {
-        var user = await _context.Set<AppUser>().FindAsync(id);
+        var user = await _users.GetByIdAsync(id);
         if (user is null)
             return Result.Failure(Error.NotFound("User", id));
 
-        _context.Set<AppUser>().Remove(user); // Soft delete via interceptor
-        await _context.SaveChangesAsync();
+        _users.Remove(user); // Soft delete via interceptor
+        await _uow.SaveChangesAsync();
 
         return Result.Success();
     }
 
     public async Task<Result> AssignRolesAsync(Guid userId, AssignRolesRequest request)
     {
-        var user = await _context.Set<AppUser>()
-            .Include(u => u.UserRoles)
-            .FirstOrDefaultAsync(u => u.Id == userId);
+        var user = await _users.GetByIdForRoleAssignmentAsync(userId);
 
         if (user is null)
             return Result.Failure(Error.NotFound("User", userId));
 
         // Remove existing role assignments
-        _context.Set<AppUserRole>().RemoveRange(user.UserRoles);
+        _users.RemoveUserRoles(user.UserRoles);
 
         // Add new role assignments
         foreach (var roleId in request.RoleIds)
         {
-            var roleExists = await _context.Set<AppRole>().AnyAsync(r => r.Id == roleId);
-            if (!roleExists)
+            if (!await _roles.ExistsByIdAsync(roleId))
                 return Result.Failure(Error.NotFound("Role", roleId));
 
             user.UserRoles.Add(new AppUserRole { UserId = userId, RoleId = roleId });
         }
 
-        await _context.SaveChangesAsync();
+        await _uow.SaveChangesAsync();
         return Result.Success();
     }
 

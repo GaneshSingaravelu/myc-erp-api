@@ -1,3 +1,4 @@
+using ERP.Application.Abstractions.MultiTenancy;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;

@@ -1,5 +1,5 @@
-using ERP.Identity.DTOs;
-using ERP.Identity.Services;
+using ERP.Application.Abstractions.Identity;
+using ERP.Application.Abstractions.Identity.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 

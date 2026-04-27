@@ -1,7 +1,12 @@
+using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
-using ERP.Identity.DTOs;
+using ERP.Application.Abstractions.Identity.Contracts;
 using ERP.Identity.Entities;
+using ERP.Identity.Persistence;
+using ERP.Identity.Services;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 
 namespace ERP.UnitTests.Identity;
@@ -48,7 +53,11 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
     [Fact]
     public async Task Refresh_WhenUserIdClaimNotGuid_ReturnsInvalidToken()
     {
-        var claims = new List<Claim> { new(ClaimTypes.NameIdentifier, "not-a-guid") };
+        // Use the JWT-native short name "sub" — production reads via that name now
+        // (TokenService disables inbound claim mapping). Using ClaimTypes.NameIdentifier
+        // here would silently make the test exercise the missing-claim branch instead
+        // of the not-a-guid branch.
+        var claims = new List<Claim> { new(JwtRegisteredClaimNames.Sub, "not-a-guid") };
         var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test"));
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
@@ -87,7 +96,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         await Context.Set<UserSession>().AddAsync(session);
         await Context.SaveChangesAsync();
 
-        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp, jti: "test-jti");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -108,7 +117,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         await Context.Set<UserSession>().AddAsync(session);
         await Context.SaveChangesAsync();
 
-        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp, jti: "test-jti");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -129,7 +138,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         await Context.Set<UserSession>().AddAsync(session);
         await Context.SaveChangesAsync();
 
-        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp, jti: "test-jti");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -155,7 +164,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         await Context.Set<UserSession>().AddAsync(session);
         await Context.SaveChangesAsync();
 
-        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp, jti: "test-jti");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -183,7 +192,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         await Context.Set<UserSession>().AddAsync(session);
         await Context.SaveChangesAsync();
 
-        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp, jti: "test-jti");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -208,7 +217,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         await Context.SaveChangesAsync();
 
         // Token's tenant_id claim points to a DIFFERENT tenant than the session
-        var principal = CreatePrincipal(user.Id, tenantClaim: otherTenant.Code, securityStamp: user.SecurityStamp);
+        var principal = CreatePrincipal(user.Id, tenantClaim: otherTenant.Code, securityStamp: user.SecurityStamp, jti: "test-jti");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -237,7 +246,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         user.IsActive = false;
         await Context.SaveChangesAsync();
 
-        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp, jti: "test-jti");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -263,7 +272,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         await Context.SaveChangesAsync();
 
         // Token has OLD SecurityStamp, user has NEW one (password was changed)
-        var principal = CreatePrincipal(user.Id, tenant.Code, securityStamp: "old-stamp-not-matching");
+        var principal = CreatePrincipal(user.Id, tenant.Code, securityStamp: "old-stamp-not-matching", jti: "test-jti");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -288,7 +297,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         await Context.SaveChangesAsync();
 
         // No security_stamp claim — should skip validation and succeed
-        var principal = CreatePrincipal(user.Id, tenant.Code, securityStamp: null);
+        var principal = CreatePrincipal(user.Id, tenant.Code, securityStamp: null, jti: "old-jti");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -308,7 +317,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         await Context.Set<UserSession>().AddAsync(session);
         await Context.SaveChangesAsync();
 
-        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp, jti: "old-jti");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -334,7 +343,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         await Context.Set<UserSession>().AddAsync(session);
         await Context.SaveChangesAsync();
 
-        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp, jti: "old-jti-to-invalidate");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -355,7 +364,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         await Context.Set<UserSession>().AddAsync(session);
         await Context.SaveChangesAsync();
 
-        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp, jti: "old-jti");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -375,7 +384,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         await Context.Set<UserSession>().AddAsync(session);
         await Context.SaveChangesAsync();
 
-        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp);
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp, jti: "old-jti");
         TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
             .Returns(principal);
 
@@ -386,5 +395,129 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         TokenServiceMock.Verify(t => t.GenerateAccessToken(
             It.IsAny<AppUser>(), It.IsAny<IList<string>>(),
             It.IsAny<IList<string>>(), tenant.Code, It.IsAny<string>()), Times.Once);
+    }
+
+    // ─── JTI Binding (security review finding #2) ───
+
+    [Fact]
+    public async Task Refresh_WhenAccessTokenJtiMissing_RevokesSessionAndReturnsError()
+    {
+        // Without a jti claim, an attacker could present an arbitrary expired
+        // token paired with a valid refresh token. The session MUST be revoked
+        // and the refresh attempt rejected so the user has to re-authenticate.
+        var (user, tenant, _, _) = await SeedUserWithRoleAsync();
+        var session = CreateTestSession(user.Id, tenant.Id, "my-refresh", jti: "session-jti");
+        await Context.Set<UserSession>().AddAsync(session);
+        await Context.SaveChangesAsync();
+
+        // Principal omits the jti claim entirely (jti: null → no claim added).
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp, jti: null);
+        TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
+            .Returns(principal);
+
+        var request = new RefreshTokenRequest("expired-token", "my-refresh");
+        var result = await Sut.RefreshTokenAsync(request, tenant.Code);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Auth.InvalidRefreshToken", result.Error.Code);
+
+        var updated = await Context.Set<UserSession>().FindAsync(session.Id);
+        Assert.True(updated!.IsRevoked);
+        Assert.Equal("JtiMismatch", updated.RevokedReason);
+        CacheMock.Verify(c => c.Remove("jti_valid:session-jti"), Times.Once);
+    }
+
+    // ─── Real-JWT Round-Trip Integration (security review follow-up) ───
+
+    [Fact]
+    public async Task Refresh_WithRealJwtRoundTrip_FindsJtiClaim()
+    {
+        // Why a real-JWT integration test (not just the manual-Claim ones above):
+        //
+        // The other refresh tests construct ClaimsPrincipal by hand with literal
+        // claim names ("jti", "sub", ...). They never exercise the actual
+        // JwtSecurityTokenHandler validation pipeline that production hits — so
+        // they cannot catch a regression where the framework changes claim mapping
+        // and "jti" silently shows up under a different claim type in the principal.
+        //
+        // This test wires AuthService against the REAL TokenService, generates a
+        // genuine signed JWT, then runs it through the refresh flow end-to-end.
+        // If the production read of jti ever fails to find the claim — for any
+        // reason, including framework default changes — this test fails immediately.
+
+        var realTokenService = new TokenService(Options.Create(TestJwtSettings));
+        var sutWithRealTokens = new AuthService(
+            new UserRepository(Context),
+            new UserSessionRepository(Context),
+            new UserPasswordHistoryRepository(Context),
+            new TenantRepository(Context),
+            new MasterUnitOfWork(Context),
+            realTokenService,
+            CacheMock.Object,
+            Options.Create(TestJwtSettings),
+            NullLogger<AuthService>.Instance);
+
+        var (user, tenant, role, permission) = await SeedUserWithRoleAsync();
+
+        // Generate a real JWT with a known jti, then seed a session whose
+        // AccessTokenJti matches it — exactly mirroring what LoginAsync does.
+        var jti = Guid.NewGuid().ToString();
+        var accessToken = realTokenService.GenerateAccessToken(
+            user,
+            new[] { role.Name },
+            new[] { permission.Code },
+            tenant.Code,
+            jti);
+        var refreshToken = realTokenService.GenerateRefreshToken();
+
+        var session = CreateTestSession(user.Id, tenant.Id, refreshToken, jti);
+        await Context.Set<UserSession>().AddAsync(session);
+        await Context.SaveChangesAsync();
+
+        var request = new RefreshTokenRequest(accessToken, refreshToken);
+        var result = await sutWithRealTokens.RefreshTokenAsync(request, tenant.Code);
+
+        // The whole point: refresh must succeed. If it returns Auth.InvalidRefreshToken
+        // here, the jti read is broken (claim mapping or otherwise).
+        Assert.True(
+            result.IsSuccess,
+            $"Refresh failed with {result.Error?.Code}: {result.Error?.Message}. " +
+            "This usually means JwtSecurityTokenHandler claim mapping changed " +
+            "and the jti read in AuthService.RefreshTokenAsync needs another fallback name.");
+
+        // Sanity: session was actually rotated (proves we cleared the JTI gate
+        // and went through the full happy path, not some other code branch).
+        var rotated = await Context.Set<UserSession>().FindAsync(session.Id);
+        Assert.NotEqual(jti, rotated!.AccessTokenJti);
+        Assert.NotEqual(refreshToken, rotated.RefreshToken);
+        Assert.False(rotated.IsRevoked);
+    }
+
+    [Fact]
+    public async Task Refresh_WhenAccessTokenJtiDoesNotMatchSession_RevokesSessionAndReturnsError()
+    {
+        // Access token A from session-1 + refresh token B from session-2 (same user)
+        // is the canonical mix-and-match attack. The presented jti != session.AccessTokenJti
+        // must be detected, the session revoked, and the JTI cache invalidated.
+        var (user, tenant, _, _) = await SeedUserWithRoleAsync();
+        var session = CreateTestSession(user.Id, tenant.Id, "session2-refresh", jti: "session2-jti");
+        await Context.Set<UserSession>().AddAsync(session);
+        await Context.SaveChangesAsync();
+
+        // Principal carries jti from a DIFFERENT session.
+        var principal = CreatePrincipal(user.Id, tenant.Code, user.SecurityStamp, jti: "session1-jti");
+        TokenServiceMock.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>()))
+            .Returns(principal);
+
+        var request = new RefreshTokenRequest("expired-token", "session2-refresh");
+        var result = await Sut.RefreshTokenAsync(request, tenant.Code);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Auth.InvalidRefreshToken", result.Error.Code);
+
+        var updated = await Context.Set<UserSession>().FindAsync(session.Id);
+        Assert.True(updated!.IsRevoked);
+        Assert.Equal("JtiMismatch", updated.RevokedReason);
+        CacheMock.Verify(c => c.Remove("jti_valid:session2-jti"), Times.Once);
     }
 }
