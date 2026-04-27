@@ -9,6 +9,10 @@ on:
   pull_request:
     branches: [main]
 
+# Least-privilege: this workflow only reads repository contents.
+permissions:
+  contents: read
+
 # A new push to a PR cancels the in-flight run for that PR — saves runner
 # minutes and prevents stale results from racing the new run to completion.
 concurrency:
@@ -39,6 +43,16 @@ jobs:
           # STS (Nov 2025 – May 2027); when the team moves to 11, bump here
           # AND in Directory.Build.props in the same PR.
           dotnet-version: '10.0.x'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          # Cache key: lock file content + OS. Changing any package version busts
+          # the cache; same versions on same OS always hit.
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Build.props', '**/Directory.Packages.props') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
 
       - name: Restore NuGet packages
         run: dotnet restore ERP.slnx
