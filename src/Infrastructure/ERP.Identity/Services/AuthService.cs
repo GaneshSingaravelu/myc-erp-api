@@ -248,7 +248,13 @@ public class AuthService : IAuthService
         // Read by JWT-native short name. GetPrincipalFromExpiredToken disables
         // inbound claim mapping (see TokenService), so "sub" stays "sub" rather
         // than being remapped to ClaimTypes.NameIdentifier.
-        var userIdClaim = principal.FindFirst(JwtRegisteredClaimNames.Sub)?.Value;
+        //
+        // MIGRATION FALLBACK: tokens issued before commit 428d30c carried the user-id
+        // as "nameid" (ClaimTypes.NameIdentifier serialised through the outbound map).
+        // Fall back to that raw name so sessions survive the deploy. Remove this
+        // fallback once the 7-day refresh-token TTL has elapsed post-deploy.
+        var userIdClaim = principal.FindFirst(JwtRegisteredClaimNames.Sub)?.Value
+            ?? principal.FindFirst("nameid")?.Value;
         if (userIdClaim is null || !Guid.TryParse(userIdClaim, out var userId))
             return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidToken", "Invalid token claims."));
 
