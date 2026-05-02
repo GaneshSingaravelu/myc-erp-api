@@ -41,4 +41,10 @@ public interface ICurrentUserService
 
     /// <summary>Check if the current user has a specific role</summary>
     bool IsInRole(string role);
+
+    /// <summary>Client IP address from the current request</summary>
+    string? IpAddress { get; }
+
+    /// <summary>User-Agent header from the current request</summary>
+    string? UserAgent { get; }
 }

@@ -54,6 +54,7 @@ public class WorkOrdersController : ControllerBase
             request.ProductName,
             request.Quantity,
             request.ProcessTemplateId,
+            request.PlantId,
             request.DueDate,
             request.Notes);
 

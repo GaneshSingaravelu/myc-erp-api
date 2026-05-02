@@ -49,17 +49,20 @@ public class TenantDbContextFactory : IDbContextFactory<AppDbContext>
 {
     private readonly ITenantProvider _tenantProvider;
     private readonly AuditableEntityInterceptor _auditInterceptor;
+    private readonly AuditLogInterceptor _auditLogInterceptor;
     private readonly DomainEventDispatcherInterceptor _domainEventInterceptor;
     private readonly ILogger<TenantDbContextFactory> _logger;
 
     public TenantDbContextFactory(
         ITenantProvider tenantProvider,
         AuditableEntityInterceptor auditInterceptor,
+        AuditLogInterceptor auditLogInterceptor,
         DomainEventDispatcherInterceptor domainEventInterceptor,
         ILogger<TenantDbContextFactory> logger)
     {
         _tenantProvider = tenantProvider;
         _auditInterceptor = auditInterceptor;
+        _auditLogInterceptor = auditLogInterceptor;
         _domainEventInterceptor = domainEventInterceptor;
         _logger = logger;
     }
@@ -77,8 +80,8 @@ public class TenantDbContextFactory : IDbContextFactory<AppDbContext>
 
         var optionsBuilder = new DbContextOptionsBuilder<AppDbContext>();
 
-        // Wire interceptors — ensures audit fields and domain events work for tenant contexts
-        optionsBuilder.AddInterceptors(_auditInterceptor, _domainEventInterceptor);
+        // Wire interceptors — ensures audit fields, audit log, and domain events work for tenant contexts
+        optionsBuilder.AddInterceptors(_auditInterceptor, _auditLogInterceptor, _domainEventInterceptor);
 
         // Switch database provider based on tenant configuration
         switch (tenant.DbProvider.ToLower())

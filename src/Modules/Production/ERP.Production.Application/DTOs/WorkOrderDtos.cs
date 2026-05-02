@@ -10,6 +10,7 @@ public record WorkOrderResponse(
     string ProductName,
     int Quantity,
     Guid ProcessTemplateId,
+    Guid PlantId,
     WorkOrderStatus Status,
     DateTime? DueDate,
     string? Notes,
@@ -50,6 +51,7 @@ public record CreateWorkOrderRequest(
     string ProductName,
     int Quantity,
     Guid ProcessTemplateId,
+    Guid PlantId,
     DateTime? DueDate = null,
     string? Notes = null);
 

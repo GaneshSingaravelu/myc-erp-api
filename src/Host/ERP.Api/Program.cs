@@ -1,5 +1,6 @@
 using ERP.Api.Middleware;
 using ERP.Application.Abstractions.Behaviors;
+using ERP.Production.Application.Behaviors;
 using ERP.Identity.Extensions;
 using ERP.Identity.Seed;
 using ERP.Infrastructure.Extensions;
@@ -70,6 +71,7 @@ builder.Services.AddMediatR(cfg =>
 
     // Register pipeline behaviors (run BEFORE every handler)
     cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
+    cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(PlantAuthorizationBehavior<,>));
     cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(LoggingBehavior<,>));
 });
 

@@ -31,6 +31,7 @@ public class GetWorkOrderByIdHandler : IQueryHandler<GetWorkOrderByIdQuery, Work
             workOrder.ProductName,
             workOrder.Quantity,
             workOrder.ProcessTemplateId,
+            workOrder.PlantId,
             workOrder.Status,
             workOrder.DueDate,
             workOrder.Notes,

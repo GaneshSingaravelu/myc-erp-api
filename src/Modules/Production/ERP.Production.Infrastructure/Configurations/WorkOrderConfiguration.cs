@@ -29,6 +29,12 @@ public class WorkOrderConfiguration : AuditableEntityConfiguration<WorkOrder>
         builder.Property(wo => wo.ProcessTemplateId)
             .IsRequired();
 
+        builder.Property(wo => wo.PlantId)
+            .IsRequired();
+
+        builder.HasIndex(wo => wo.PlantId)
+            .HasDatabaseName("IX_WorkOrders_PlantId");
+
         builder.Property(wo => wo.Status)
             .IsRequired()
             .HasConversion<string>()

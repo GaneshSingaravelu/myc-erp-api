@@ -38,6 +38,7 @@ public class WorkOrder : AuditableEntity
         string productName,
         int quantity,
         Guid processTemplateId,
+        Guid plantId,
         DateTime? dueDate = null,
         string? notes = null)
     {
@@ -49,6 +50,7 @@ public class WorkOrder : AuditableEntity
         ProductName = productName;
         Quantity = quantity;
         ProcessTemplateId = processTemplateId;
+        PlantId = plantId;
         DueDate = dueDate;
         Notes = notes;
         Status = WorkOrderStatus.Draft;
@@ -65,6 +67,9 @@ public class WorkOrder : AuditableEntity
 
     /// <summary>FK to the process template (workflow) this order follows</summary>
     public Guid ProcessTemplateId { get; private set; }
+
+    /// <summary>FK to the Plant where this work order will be executed</summary>
+    public Guid PlantId { get; private set; }
 
     /// <summary>Current status in the lifecycle</summary>
     public WorkOrderStatus Status { get; private set; }

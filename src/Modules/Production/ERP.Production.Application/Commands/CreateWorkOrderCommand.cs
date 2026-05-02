@@ -11,8 +11,9 @@ public record CreateWorkOrderCommand(
     string ProductName,
     int Quantity,
     Guid ProcessTemplateId,
+    Guid PlantId,
     DateTime? DueDate,
-    string? Notes) : ICommand<Guid>;
+    string? Notes) : ICommand<Guid>, IPlantScopedRequest;
 
 public class CreateWorkOrderHandler : ICommandHandler<CreateWorkOrderCommand, Guid>
 {
@@ -27,7 +28,6 @@ public class CreateWorkOrderHandler : ICommandHandler<CreateWorkOrderCommand, Gu
 
     public async Task<Result<Guid>> Handle(CreateWorkOrderCommand request, CancellationToken cancellationToken)
     {
-        // Check for duplicate order number
         var exists = await _workOrderRepo.AnyAsync(
             wo => wo.OrderNumber == request.OrderNumber, cancellationToken);
 
@@ -40,6 +40,7 @@ public class CreateWorkOrderHandler : ICommandHandler<CreateWorkOrderCommand, Gu
             request.ProductName,
             request.Quantity,
             request.ProcessTemplateId,
+            request.PlantId,
             request.DueDate,
             request.Notes);
 

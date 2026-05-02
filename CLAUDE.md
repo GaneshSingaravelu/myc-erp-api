@@ -18,7 +18,7 @@ Supports multi-tenant, multi-database-provider architecture for manufacturing co
 ```
 ERP.slnx                              ← .NET 10 SDK format, all projects target net10.0
 ├── src/Core/
-│   ├── ERP.SharedKernel/                          ← Base entities, ValueObject, Result<T>, Guards, DomainEvents
+│   ├── ERP.SharedKernel/                          ← Base entities (incl. AuditLog), ValueObject, Result<T>, Guards, DomainEvents
 │   └── ERP.Application.Abstractions/              ← ICommand, IQuery, IRepository, IUnitOfWork, Behaviors
 │       ├── Identity/                              ← IAuthService, IUserService, IRoleService, IMenuService,
 │       │   │                                        ITenantManagementService, ICurrentUserService
@@ -185,30 +185,98 @@ dotnet test ERP.slnx
 
 - [x] Phase 0: Solution structure, SharedKernel, Persistence, Infrastructure, Identity, Notifications, API Host
 - [x] Phase 1: Identity APIs (login, register, role/permission management) + Workflow engine (ProcessTemplate, ProcessStep CRUD)
-- [x] Phase 2: Production module — WorkOrder & JobCard entities, CRUD commands/queries, controllers
+- [~] Phase 2: Production module — WorkOrder & JobCard entities, CRUD commands/queries, controllers — **PARTIAL: see "Phase 2 Audit Gaps" below**
 - [x] Phase 2.5A: Master DB architecture (MasterDbContext, redesigned identity entities, DesignTimeDbContextFactories)
 - [x] Phase 2.5B: Tenant provisioning API (TenantsController, TenantManagementService, TenantProvisioningService, MasterDbTenantStore)
 - [x] Phase 2.5C: Refactor auth flow for Master DB (sessions, lockout, password history, SecurityStamp, logout)
-- [x] Phase 2.5D: Dynamic menu API (permission-filtered sidebar)
-- [x] Phase 2.5E: Tenant DB additions (Plants, UserPlantAccess, UserPreferences, AuditLogs)
+- [~] Phase 2.5D: Dynamic menu API (permission-filtered sidebar) — **PARTIAL: API supports unlimited hierarchy, UI submenu renders n-levels recursively, but (a) sidebar collapsed-icon click does NOT expand (only opens flyout), (b) seed data only goes 1 level deep — needs multi-hierarchy demo seed**
+- [~] Phase 2.5E: Tenant DB additions (Plants, UserPlantAccess, UserPreferences, AuditLogs) — **INFRASTRUCTURE-ONLY: entities + EF configs + migrations exist, but ZERO integration (see audit below)**
 - [x] Phase 2.5F: API smoke testing (all auth/authz/multi-tenant scenarios)
-- [x] Phase 2.5G: Angular integration (NgRx Signal Store, AuthStore, MenuStore, JWT/X-Tenant interceptors, dynamic sidebar) — merged in `myc-erp-demo` repo
+- [x] Phase 2.5G: Angular integration (NgRx Signal Store, AuthStore, MenuStore, JWT/X-Tenant interceptors, dynamic sidebar) — PR #7 merged
 - [x] Phase 2.5W: AuthService unit tests (51 tests) — PR #3 merged
-- [x] Phase 2.5X: Identity services repository refactor (User/Role/Menu/TenantManagement) + IdentityServiceTestBase + 47 new unit tests + architecture guard — **uncommitted on `main`**
-- [ ] Pre-Phase 3: Angular fixes (login UI, tenant dropdown UX, stale-token guard, login page layout) — see "Pre-Phase 3 Punch List" below
-- [ ] Phase 2.5Y: Graphify A/B token-cost analysis (parked, user-driven)
-- [ ] Phase 3: SignalR integration (job card status, QA alerts)
+- [x] Phase 2.5X: Identity services repository refactor (User/Role/Menu/TenantManagement) + IdentityServiceTestBase + 47 new unit tests + architecture guard — PR #4 merged
+- [x] Phase 2.5Y: JWT hardening (base64url padding fix, clock-skew direction correction, MapInboundClaims=false, JTI binding) — merged with Phase 2.5X / Pre-Phase 3
+- [x] Phase 2.5Z: Cross-tenant role/permission isolation (IsAssignedToTenantAsync gate, tenant-filtered role/permission extraction at login & refresh) — PR `fix/tenant-scoped-role-permission` (commit e417526)
+- [x] Pre-Phase 3: Angular fixes (login UI rebuild, full-page auth layout, stale-token guard, tenant code wiring) — PR #7 merged
+- [x] CI/CD: GitHub Actions workflows for both repos (build + test + cache) + .gitattributes LF normalization
+- [~] **Phase 2 Completion:** API items 1–4 done (AuditLogInterceptor, PlantAuthorizationBehavior, UserPreferences, Plants CRUD). Angular items remain: skeleton loader, @defer, multi-hierarchy menu seed, sidebar collapse-expand, component folder audit, Graphify, BEM/component-folder standards
+- [ ] Phase 3 Preparation: Sample seed users (Operator, Inspector, Viewer with multi-tenant assignments) + Tenant dropdown UX
+- [ ] Phase 3: SignalR integration (job card status broadcasts, QA alerts, tenant-scoped hub groups)
 - [ ] Phase 4: Reporting (open-source, Angular-compatible)
 - [ ] Phase 5: Additional modules (Finance, Sales, HR — process templates)
 
-### Pre-Phase 3 Punch List (Angular — `myc-erp-demo`)
+---
 
-1. **Login page broken** — submit button missing, layout/styling issues. Full UI fix + manual smoke test.
-2. **Tenant field UX** — add `IsTenantSelectionRequired` config flag.
-   - If false → hide field, use default tenant
-   - If true → render as **dropdown** (not textbox), populated from a public "list available tenants" endpoint or embedded app config
-3. **Stale localStorage token bypasses guard** — `AuthStore.isLoggedIn()` returns true for any token (incl. `dummy-token` from old dev sessions). Decode JWT and check `exp` claim in the guard.
-4. **Login page renders inside WebLayoutComponent** — sidebar/navbar shouldn't appear on login. Move login under a full-page layout.
+## Phase 2 Audit Gaps (DISCOVERED — must complete before Phase 3)
+
+This section captures gaps surfaced by a deep audit of Phase 2 / 2.5D / 2.5E. The phases were marked complete based on **infrastructure existence**, but business integration is missing. **All items below are required to truly close Phase 2.**
+
+### A. Tenant DB Additions — Not Wired (Phase 2.5E)
+
+| Entity | Status | Gap |
+|--------|--------|-----|
+| `Plant` | ✅ DONE | `PlantsController` + `PlantCommands.cs` + `PlantQueries.cs` in Production module. Admin-only writes use `[Authorize(Roles = "Admin")]`. |
+| `UserPlantAccess` | ✅ DONE | `PlantAuthorizationBehavior` in `ERP.Production.Application/Behaviors/`. Commands implement `IPlantScopedRequest` (in Application.Abstractions.CQRS). `WorkOrder.PlantId` added. Migration `20260502180307_AddPlantIdToWorkOrders`. |
+| `UserPreference` | ✅ DONE (API) | `UserPreferencesController` + `SetUserPreferenceCommand` + `GetUserPreferenceQuery`. Upsert on PUT. **Angular PreferenceStore still needed.** |
+| `AuditLog` (tenant) | ✅ DONE | `AuditLogInterceptor` in `ERP.Persistence/Interceptors/`. Entity moved to `ERP.SharedKernel.Entities`. Config moved to `ERP.Persistence/Configurations/`. Captures Create/Update/Delete with old/new JSON snapshots, UserId, IP, UserAgent. Wired in `TenantDbContextFactory`. 5 unit tests. |
+
+**Remaining work (Angular):**
+- Wire Angular `PreferenceStore` for sidebar-collapsed-state + UI filter persistence.
+- See Section C below for skeleton loader, @defer, component folders, Graphify.
+
+### B. Dynamic Menu — Hierarchy Display & Collapsed-Click (Phase 2.5D)
+
+**API:** ✅ Fully supports unlimited depth (`Menu.ParentMenuId`, `MenuService.BuildMenuItem` is recursive, `MenuItemResponse.Children` is recursive list).
+**UI fullscreen submenu (`submenu.html`):** ✅ Renders n-level items via `*ngTemplateOutlet` with `depth + 1` recursion.
+
+**Gaps:**
+1. **Seed data only goes 1 level deep** — IdentitySeeder needs to seed nested menus (e.g., Production → Work Orders → Create / List / Approvals) to demonstrate the hierarchy
+2. **Sidebar collapsed-icon click should EXPAND the sidebar** when user clicks a parent menu icon — currently it opens a flyout instead. UX expectation: clicking a menu icon while sidebar is collapsed should auto-expand the sidebar to that menu (then user can click child)
+
+### C. UI Standards & Reusability (NEW Phase 2 items)
+
+1. **Skeleton Loader Component (build now)** — Create reusable `SkeletonComponent` in `libs/ui/src/lib/skeleton/`:
+   - Inputs: `shape: 'rectangle' | 'circle' | 'text'`, `width: string`, `height: string`, `animation: 'pulse' | 'wave' | 'none'`
+   - Wraps Kendo `kendo-skeleton` OR rolls its own (Kendo dep already in package-lock)
+   - Usage:
+     ```html
+     <mycodee-skeleton shape="rectangle" width="100%" height="230px" animation="pulse" />
+     <mycodee-skeleton shape="text" width="40%" />
+     <mycodee-skeleton shape="circle" width="48px" height="48px" />
+     ```
+
+2. **`@defer` + Skeleton everywhere data-bound** — Convert data-loading components to use Angular `@defer (when data())` with `@placeholder` rendering a skeleton matching the final UI shape. Don't show the actual UI until the API responds. Pattern:
+   ```html
+   @defer (when !loading()) {
+     <kpi-card [data]="data()" />
+   } @placeholder {
+     <mycodee-skeleton shape="rectangle" width="100%" height="120px" />
+   }
+   ```
+
+3. **Component folder structure** — Each component in its own folder: `component-name/{component-name.ts, component-name.html, component-name.scss, component-name.spec.ts, index.ts}`. Audit existing components and refactor any flat files into folders.
+
+4. **CSS naming convention is BEM** (`myc-{block}__{element}--{modifier}`):
+   - **Confirmed standard.** `myc-auth__header` is **proper BEM with `myc-` namespace prefix** (Block__Element).
+   - Used consistently across `_auth-layout.scss`, `_admin-layout.scss`, `_glassmorphism.scss`, dashboard components, and stat-card.
+   - Document this convention explicitly in `myc-erp-demo/CLAUDE.md` so contributors don't invent ad-hoc patterns.
+
+5. **Graphify implementation** (was Phase 2.5Y, promoted into Phase 2):
+   - **Goal:** Single shared GraphQL endpoint for both API and UI consumption to reduce REST chatter and over-fetching
+   - **API:** Add `HotChocolate.AspNetCore` + `HotChocolate.Data.EntityFramework`; expose schema-first GraphQL at `/graphql`
+   - **UI:** Add Apollo Angular (`@apollo/client` + `apollo-angular`); generate typed operations via `graphql-codegen`
+   - **Shared schema:** Define `.graphql` schema files in a shared location (e.g. `libs/shared/graphql/schema/` mirrored to API resources) so both sides stay in sync; codegen produces TS types in UI and C# types in API
+   - **Auth:** Reuse JWT bearer + X-Tenant-Id header (resolve tenant in GraphQL middleware identical to REST)
+   - Start with read queries only (Menus, WorkOrders, JobCards), keep mutations on REST until query story stabilizes
+
+### Pre-Phase 3 Punch List (Angular — `myc-erp-demo`) — ✅ COMPLETED (PR #7 merged)
+
+All four items below shipped:
+
+1. ✅ **Login page rebuilt** — submit button, layout, BEM-style auth scss
+2. ⏳ **Tenant field UX** — moved to "Phase 3 Preparation" (dropdown design + public endpoint)
+3. ✅ **Stale localStorage token bypasses guard** — `authGuard` now decodes JWT + checks `exp` (with base64url padding fix + 30s clock-skew expire-early)
+4. ✅ **Login full-page layout** — login routed outside WebLayoutComponent
 
 ### Phase 2.5X — What Landed (uncommitted, fully tested)
 
@@ -239,15 +307,29 @@ dotnet test ERP.slnx
 - `IdentityServiceTestBase.cs` — shared base with InMemory `MasterDbContext` + all 6 identity repositories + `MasterUnitOfWork` + `AuditableEntityInterceptor` (mocked `ICurrentUserService`); seed helpers `CreateTestUser/Role/Permission/Tenant` + `PersistAsync<T>`
 - `UserServiceTests.cs` (11 tests), `RoleServiceTests.cs` (12), `MenuServiceTests.cs` (8), `TenantManagementServiceTests.cs` (10)
 
-**Test suite status:** 13/13 architecture + 99/99 unit tests passing (was 12/12 + 52/52 before this work).
+**Test suite status (Phase 2.5X baseline):** 13/13 architecture + 99/99 unit tests passing (was 12/12 + 52/52 before this work). After Phase 2 API items: 111/111 unit + 13/13 architecture (5 new `AuditLogInterceptorTests`).
 
 **Error code convention:** `Error.NotFound("Entity", id)` produces code `"{Entity}.NotFound"` — e.g. `"User.NotFound"`, `"Role.NotFound"`, `"Permission.NotFound"`, `"Tenant.NotFound"`. Tests assert against these full codes.
 
 ### Suggested Next Action (when you resume)
 
-1. Commit Phase 2.5X with a descriptive message + open PR (current diff is large but cohesive — single "Identity services repository refactor" commit recommended)
-2. Tackle Pre-Phase 3 Angular punch list in `myc-erp-demo`
-3. Then Phase 3 SignalR (job card status broadcasts, QA alerts, tenant-scoped hub groups)
+**Phase 2 completion — API items done, Angular items remain:**
+
+1. ✅ **AuditLogInterceptor** — done. `AuditLogInterceptor.cs` in `ERP.Persistence/Interceptors/`. `AuditLog` moved to `ERP.SharedKernel.Entities`. Config in `ERP.Persistence/Configurations/`. Wired in `TenantDbContextFactory`.
+2. ✅ **UserPlantAccess enforcement** — done. `PlantAuthorizationBehavior` + `IPlantScopedRequest`. `WorkOrder.PlantId` added + migration.
+3. ✅ **UserPreference store (API)** — done. `UserPreferencesController` + upsert command + queries.
+4. ✅ **Plants CRUD** — done. `PlantsController` + `PlantCommands.cs` + `PlantQueries.cs`.
+5. **Skeleton loader component** in `libs/ui/src/lib/skeleton/` — rectangle/circle/text shapes, pulse/wave animation, width/height inputs.
+6. **`@defer` rollout** — convert all data-loading components to `@defer (when data())` with skeleton placeholders matching final UI shape.
+7. **Multi-hierarchy menu seed** — IdentitySeeder seeds 3-level menu (Module → Parent → Child) so the recursive renderer is exercised.
+8. **Sidebar collapsed-icon expand** — clicking a parent menu icon in collapsed mode should auto-expand the sidebar (not open flyout).
+9. **Component folder structure audit** — every component in its own folder.
+10. **Angular PreferenceStore** — NgRx Signal Store wired to `PUT /api/v1/preferences/{key}` for sidebar-collapsed-state + table filters.
+11. **Graphify (HotChocolate + Apollo Angular)** — start with read queries (Menus, WorkOrders, JobCards) sharing schema between API and UI.
+
+**After Phase 2 closes:**
+- Phase 3 Prep: sample seed users (Operator/Inspector/Viewer multi-tenant) + tenant dropdown UX + public list-tenants endpoint
+- Phase 3: SignalR (job card status broadcasts, QA alerts, tenant-scoped hub groups)
 
 ## Important Notes
 
@@ -261,6 +343,17 @@ dotnet test ERP.slnx
 - `BaseEntity.Id` uses `init` accessor — settable in object initializers, immutable after construction
 - Identity seeder runs on startup — creates default admin (admin/Admin@123), 4 roles, 28 permissions
 - Workflow engine is table-based (no Elsa) — clients modify flow via CRUD on ProcessTemplate/ProcessStep
+- `AuditLog` entity lives in `ERP.SharedKernel.Entities` (not Production.Domain). Its EF config is in `ERP.Persistence/Configurations/AuditLogConfiguration.cs`. `AuditLogInterceptor` populates it — wired in `TenantDbContextFactory` only (not MasterDbContext, since AuditLogs are tenant-DB only).
+- Pipeline behavior execution order: `ValidationBehavior` → `PlantAuthorizationBehavior` → `LoggingBehavior` → Handler. Plant auth only fires for commands implementing `IPlantScopedRequest` (in `ERP.Application.Abstractions.CQRS`).
+- `ICurrentUserService` now exposes `IpAddress` and `UserAgent` (added for `AuditLogInterceptor`).
+- **AppDbContext migrations must use `tools/ERP.DbMigrator` as the startup project** — `ERP.Api` fails at design time because `HttpContext` is unavailable. Command: `dotnet ef migrations add <Name> --context AppDbContext --project src/Infrastructure/ERP.Persistence.SqlServer --startup-project tools/ERP.DbMigrator --output-dir Migrations/AppDb`
+
+## CI/CD Status
+
+- **API (.NET 10):** GitHub Actions workflow — `dotnet build ERP.slnx` → `dotnet test ERP.slnx`. NuGet cache enabled. Permissions `contents: read`. Currently green: 111/111 unit tests + 13/13 architecture guards.
+- **UI (Angular):** GitHub Actions workflow — `npm ci` → `npx nx run-many --target lint --all` → `npx nx run-many --target test --all`. npm cache enabled.
+- **`.gitattributes`** enforces LF line endings repo-wide (eliminates CRLF noise on Windows contributors).
+- **Recommended next:** Branch protection on `main` requiring CI green + 1 review.
 
 ## Design Patterns (20 Used)
 
