@@ -30,6 +30,7 @@ public static class PersistenceServiceExtensions
     {
         // Register interceptors
         services.AddScoped<AuditableEntityInterceptor>();
+        services.AddScoped<AuditLogInterceptor>();
         services.AddScoped<DomainEventDispatcherInterceptor>();
 
         // Register generic repository — any IRepository<T> resolves to Repository<T>
