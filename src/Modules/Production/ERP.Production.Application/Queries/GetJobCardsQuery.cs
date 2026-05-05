@@ -21,7 +21,7 @@ public class GetJobCardsHandler : IQueryHandler<GetJobCardsQuery, List<JobCardRe
         _jobCardRepo = jobCardRepo;
     }
 
-    public async Task<Result<List<JobCardResponse>>> Handle(
+    public async ValueTask<Result<List<JobCardResponse>>> Handle(
         GetJobCardsQuery request, CancellationToken cancellationToken)
     {
         IReadOnlyList<JobCard> jobCards;

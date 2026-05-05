@@ -19,7 +19,7 @@ public class DeleteWorkOrderHandler : ICommandHandler<DeleteWorkOrderCommand>
         _unitOfWork = unitOfWork;
     }
 
-    public async Task<Result> Handle(DeleteWorkOrderCommand request, CancellationToken cancellationToken)
+    public async ValueTask<Result> Handle(DeleteWorkOrderCommand request, CancellationToken cancellationToken)
     {
         var workOrder = await _workOrderRepo.GetByIdAsync(request.Id, cancellationToken);
         if (workOrder is null)

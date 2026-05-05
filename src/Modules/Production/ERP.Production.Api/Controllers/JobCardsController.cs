@@ -2,7 +2,7 @@ using ERP.Production.Application.Commands;
 using ERP.Production.Application.DTOs;
 using ERP.Production.Application.Queries;
 using ERP.Production.Domain.Enums;
-using MediatR;
+using Mediator;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 

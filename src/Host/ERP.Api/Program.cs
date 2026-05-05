@@ -9,7 +9,7 @@ using ERP.Notifications.Hubs;
 using ERP.Persistence.Extensions;
 using ERP.Production.Infrastructure.Extensions;
 using ERP.Workflow.Infrastructure.Extensions;
-using MediatR;
+using Mediator;
 using Serilog;
 
 // ============================================================================
@@ -60,20 +60,14 @@ builder.Host.UseSerilog();
 // This is where Dependency Injection is configured.
 // Each project provides an extension method to register its services.
 
-// --- Core: CQRS with MediatR ---
-// MediatR scans assemblies for command/query handlers and registers them
-builder.Services.AddMediatR(cfg =>
-{
-    // Register handlers from all assemblies
-    cfg.RegisterServicesFromAssembly(typeof(ValidationBehavior<,>).Assembly);
-    cfg.RegisterServicesFromAssembly(typeof(ERP.Workflow.Application.Commands.CreateProcessTemplateCommand).Assembly);
-    cfg.RegisterServicesFromAssembly(typeof(ERP.Production.Application.Commands.CreateWorkOrderCommand).Assembly);
+// --- Core: CQRS with Mediator (MIT-licensed replacement for MediatR RPL-1.5) ---
+// Source generator discovers all handlers in referenced assemblies at compile time
+builder.Services.AddMediator(o => o.ServiceLifetime = ServiceLifetime.Scoped);
 
-    // Register pipeline behaviors (run BEFORE every handler)
-    cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
-    cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(PlantAuthorizationBehavior<,>));
-    cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(LoggingBehavior<,>));
-});
+// Pipeline behaviors — run in registration order before every handler
+builder.Services.AddScoped(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
+builder.Services.AddScoped(typeof(IPipelineBehavior<,>), typeof(PlantAuthorizationBehavior<,>));
+builder.Services.AddScoped(typeof(IPipelineBehavior<,>), typeof(LoggingBehavior<,>));
 
 // --- Persistence: Repositories, Unit of Work, Interceptors ---
 builder.Services.AddPersistence();

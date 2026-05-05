@@ -181,6 +181,83 @@ dotnet test ERP.slnx
 - `Serilog` → Log levels, sinks
 - **Secrets policy:** `appsettings.json` contains only placeholders; real values go in `appsettings.Development.json`, environment variables, or a secret store. Startup fails fast if JWT key is missing/weak (< 32 chars).
 
+## Third-Party Library License Policy
+
+**Rule:** No third-party library may be added to either repo without prior license verification. Only MIT, Apache 2.0, BSD-2, or BSD-3 licensed libraries are approved. Libraries with revenue thresholds, seat limits, SaaS restrictions, or commercial-use gates are **rejected**.
+
+### Verification Checklist (run before every `npm install` / `dotnet add package`)
+
+1. Check `LICENSE` file in the GitHub repo — must be MIT / Apache 2.0 / BSD
+2. Confirm the license text contains **no revenue thresholds, seat caps, or commercial restrictions**
+3. Check the npm/NuGet page for any separate "Community vs Enterprise" edition split
+4. If a runtime license warning or watermark appears at any point → **stop, reject, find alternative**
+5. Document the result in the table below before merging
+
+### Approved Libraries (verified — full audit 2026-05-05)
+
+**Angular Frontend (`myc-erp-demo`)**
+
+| Library | License | Notes |
+|---|---|---|
+| All `@angular/*` | MIT | ✅ Google Open Source |
+| `@ngrx/signals`, `@ngrx/store`, `@ngrx/operators` | MIT | ✅ |
+| `@angular/cdk` | MIT | ✅ Grid fallback option |
+| `rxjs` | Apache 2.0 | ✅ |
+| `@ngx-translate/core`, `http-loader` | MIT | ✅ |
+| `echarts` | Apache 2.0 | ✅ Apache Software Foundation |
+| `ngx-echarts` | MIT | ✅ |
+| `lucide-angular` | ISC | ✅ Permissive |
+| Tailwind CSS | MIT | ✅ |
+| `husky`, `prettier`, `eslint`, `jest`, `postcss` | MIT | ✅ Dev tools only |
+| `@swc/core` | Apache 2.0 | ✅ |
+| `semantic-release` | MIT | ✅ |
+| `@module-federation/enhanced` | MIT | ✅ |
+| `@testing-library/*`, `jest-preset-angular` | MIT | ✅ Test tools only |
+| `@nx/*` | MIT | ✅ |
+
+**Grid library — status: pending decision**
+
+| Library | License | Notes |
+|---|---|---|
+| `ngx-cerious-widgets` | MIT | ✅ No revenue threshold. ⚠️ Built for Angular 18 — must test `--legacy-peer-deps` against Angular 20 before committing. If compat fails → use Angular CDK fallback. |
+
+**ERP API (`erp_api`) — .NET NuGet packages**
+
+| Library | License | Notes |
+|---|---|---|
+| All `Microsoft.*` / `System.*` | MIT | ✅ |
+| `Microsoft.EntityFrameworkCore.*` | MIT | ✅ |
+| `Npgsql.EntityFrameworkCore.PostgreSQL` | PostgreSQL License (permissive) | ✅ |
+| `FluentValidation` | Apache 2.0 | ✅ Jeremy Skinner |
+| `Serilog.*` | Apache 2.0 | ✅ |
+| `BCrypt.Net-Next` | MIT | ✅ |
+| `Swashbuckle.AspNetCore` | MIT | ✅ |
+| `Asp.Versioning.*` | MIT | ✅ |
+| `AspNetCore.HealthChecks.*` | MIT | ✅ |
+| `System.IdentityModel.Tokens.Jwt` | MIT | ✅ Microsoft |
+| `NetArchTest.Rules` | MIT | ✅ Test tool only |
+| `xunit`, `Moq`, `coverlet.collector` | Apache 2.0 / BSD-3 / MIT | ✅ Test tools only |
+| `Mediator.SourceGenerator` + `Mediator.Abstractions` | MIT | ✅ **Active replacement for MediatR** — v3.0.2, source-generated, same IRequest/IRequestHandler API, handlers return ValueTask, behaviors use MessageHandlerDelegate |
+
+### Rejected / Conditional Libraries
+
+| Library | License | Reason |
+|---|---|---|
+| `MediatR` / `MediatR.Contracts` | RPL 1.5 + Commercial | 🚫 **REMOVED 2026-05-05.** RPL 1.5 = viral copyleft: deploying software using MediatR requires releasing full source code OR purchasing a commercial license. Replaced by `Mediator` (MIT). Do not re-add. |
+| AG Grid Enterprise | Commercial | Revenue-based pricing; watermark on free tier |
+| Kendo UI for Angular | Commercial | Per-developer seat license |
+| Syncfusion | Community | Free only if individual revenue <$1M |
+| DevExtreme | Dual (MIT/Commercial) | MIT only for non-commercial use |
+
+### Grid Fallback Strategy
+
+If `ngx-cerious-widgets` fails Angular 20 compatibility test:
+- **Use `@angular/cdk/table`** (already in project, MIT, zero install needed)
+- Build `libs/ui/src/lib/grid/` wrapper with identical `ColumnDef / PaginationEvent` API
+- Consumer components require zero changes — same inputs/outputs contract
+
+---
+
 ## Phase Status
 
 - [x] Phase 0: Solution structure, SharedKernel, Persistence, Infrastructure, Identity, Notifications, API Host
@@ -199,7 +276,11 @@ dotnet test ERP.slnx
 - [x] Phase 2.5Z: Cross-tenant role/permission isolation (IsAssignedToTenantAsync gate, tenant-filtered role/permission extraction at login & refresh) — PR `fix/tenant-scoped-role-permission` (commit e417526)
 - [x] Pre-Phase 3: Angular fixes (login UI rebuild, full-page auth layout, stale-token guard, tenant code wiring) — PR #7 merged
 - [x] CI/CD: GitHub Actions workflows for both repos (build + test + cache) + .gitattributes LF normalization
-- [~] **Phase 2 Completion:** API items 1–4 done (AuditLogInterceptor, PlantAuthorizationBehavior, UserPreferences, Plants CRUD). Angular items remain: skeleton loader, @defer, multi-hierarchy menu seed, sidebar collapse-expand, component folder audit, Graphify, BEM/component-folder standards
+- [x] **Phase 2 Completion:** All 10 audit-gap items closed. API: AuditLogInterceptor, PlantAuthorizationBehavior, UserPreferences, Plants CRUD. Angular: Skeleton loader, @defer rollout, PreferenceStore (API-backed + localStorage), sidebar collapsed-expand fix, multi-hierarchy menu seed (3-level), component folder structure audit.
+- [x] **Phase 2 UI Polish:** Sidebar brand/footer alignment (host height chain), collapsed section icons with primary color + CSS tooltip, full-height flyout (host + `.myc-flyout { height: 100% }`), real user data in header profile dropdown (AuthStore computed signals), `NavSection.icon` propagated via MenuStore, convergence-based IdentitySeeder (INSERT/UPDATE/SOFT-DELETE/RE-ACTIVATE by Code — idempotent, runs every boot).
+- [x] **License Policy Checkpoint:** Full audit completed 2026-05-05. All Angular deps clean (MIT/Apache). MediatR identified as RPL 1.5 (viral copyleft — must replace). Replacement: `Mediator` by martinothamar (MIT). Policy documented in "Third-Party Library License Policy" section.
+- [x] **MediatR Migration:** Replaced `MediatR` (RPL-1.5) + `MediatR.Contracts` with `Mediator.SourceGenerator` + `Mediator.Abstractions` v3.0.2 (MIT). All 20 handlers migrated (Task→ValueTask), 3 behaviors updated (MessageHandlerDelegate), DomainEventDispatcherInterceptor (IPublisher→IMediator), Program.cs (AddMediatR→AddMediator). Build: 0 errors. Tests: 111/111 + 13/13 ✅
+- [ ] **Phase 2.9 — Admin Foundations** (must complete before Phase 3): Grid component (`ngx-cerious-widgets` wrapper OR Angular CDK fallback, server-side pagination, column config), User Management (Create/Edit with Signal Forms, Activate/Deactivate, Role assignment), Forgot Password flow (email → reset link/OTP → secure reset), Roles & Permissions UI (RBAC table explorer)
 - [ ] Phase 3 Preparation: Sample seed users (Operator, Inspector, Viewer with multi-tenant assignments) + Tenant dropdown UX
 - [ ] Phase 3: SignalR integration (job card status broadcasts, QA alerts, tenant-scoped hub groups)
 - [ ] Phase 4: Reporting (open-source, Angular-compatible)
@@ -220,54 +301,21 @@ This section captures gaps surfaced by a deep audit of Phase 2 / 2.5D / 2.5E. Th
 | `UserPreference` | ✅ DONE (API) | `UserPreferencesController` + `SetUserPreferenceCommand` + `GetUserPreferenceQuery`. Upsert on PUT. **Angular PreferenceStore still needed.** |
 | `AuditLog` (tenant) | ✅ DONE | `AuditLogInterceptor` in `ERP.Persistence/Interceptors/`. Entity moved to `ERP.SharedKernel.Entities`. Config moved to `ERP.Persistence/Configurations/`. Captures Create/Update/Delete with old/new JSON snapshots, UserId, IP, UserAgent. Wired in `TenantDbContextFactory`. 5 unit tests. |
 
-**Remaining work (Angular):**
-- Wire Angular `PreferenceStore` for sidebar-collapsed-state + UI filter persistence.
-- See Section C below for skeleton loader, @defer, component folders, Graphify.
+**All Angular work complete.** `PreferenceStore` wired, sidebar-collapsed persisted, @defer + skeleton, component folders, 3-level menu seed.
 
-### B. Dynamic Menu — Hierarchy Display & Collapsed-Click (Phase 2.5D)
+### B. Dynamic Menu — Hierarchy Display & Collapsed-Click (Phase 2.5D) ✅ DONE
 
-**API:** ✅ Fully supports unlimited depth (`Menu.ParentMenuId`, `MenuService.BuildMenuItem` is recursive, `MenuItemResponse.Children` is recursive list).
-**UI fullscreen submenu (`submenu.html`):** ✅ Renders n-level items via `*ngTemplateOutlet` with `depth + 1` recursion.
+**API:** ✅ Fully supports unlimited depth.
+**Seed data:** ✅ IdentitySeeder now seeds 3-level Production hierarchy (Module → Work Orders → Create/List/Approvals; Job Cards → Create/List).
+**Sidebar collapsed-icon click:** ✅ `MainLayoutComponent.toggleFlyout()`: first click on parent while collapsed = expand sidebar only; second click = open flyout.
 
-**Gaps:**
-1. **Seed data only goes 1 level deep** — IdentitySeeder needs to seed nested menus (e.g., Production → Work Orders → Create / List / Approvals) to demonstrate the hierarchy
-2. **Sidebar collapsed-icon click should EXPAND the sidebar** when user clicks a parent menu icon — currently it opens a flyout instead. UX expectation: clicking a menu icon while sidebar is collapsed should auto-expand the sidebar to that menu (then user can click child)
+### C. UI Standards & Reusability ✅ DONE
 
-### C. UI Standards & Reusability (NEW Phase 2 items)
-
-1. **Skeleton Loader Component (build now)** — Create reusable `SkeletonComponent` in `libs/ui/src/lib/skeleton/`:
-   - Inputs: `shape: 'rectangle' | 'circle' | 'text'`, `width: string`, `height: string`, `animation: 'pulse' | 'wave' | 'none'`
-   - Wraps Kendo `kendo-skeleton` OR rolls its own (Kendo dep already in package-lock)
-   - Usage:
-     ```html
-     <mycodee-skeleton shape="rectangle" width="100%" height="230px" animation="pulse" />
-     <mycodee-skeleton shape="text" width="40%" />
-     <mycodee-skeleton shape="circle" width="48px" height="48px" />
-     ```
-
-2. **`@defer` + Skeleton everywhere data-bound** — Convert data-loading components to use Angular `@defer (when data())` with `@placeholder` rendering a skeleton matching the final UI shape. Don't show the actual UI until the API responds. Pattern:
-   ```html
-   @defer (when !loading()) {
-     <kpi-card [data]="data()" />
-   } @placeholder {
-     <mycodee-skeleton shape="rectangle" width="100%" height="120px" />
-   }
-   ```
-
-3. **Component folder structure** — Each component in its own folder: `component-name/{component-name.ts, component-name.html, component-name.scss, component-name.spec.ts, index.ts}`. Audit existing components and refactor any flat files into folders.
-
-4. **CSS naming convention is BEM** (`myc-{block}__{element}--{modifier}`):
-   - **Confirmed standard.** `myc-auth__header` is **proper BEM with `myc-` namespace prefix** (Block__Element).
-   - Used consistently across `_auth-layout.scss`, `_admin-layout.scss`, `_glassmorphism.scss`, dashboard components, and stat-card.
-   - Document this convention explicitly in `myc-erp-demo/CLAUDE.md` so contributors don't invent ad-hoc patterns.
-
-5. **Graphify implementation** (was Phase 2.5Y, promoted into Phase 2):
-   - **Goal:** Single shared GraphQL endpoint for both API and UI consumption to reduce REST chatter and over-fetching
-   - **API:** Add `HotChocolate.AspNetCore` + `HotChocolate.Data.EntityFramework`; expose schema-first GraphQL at `/graphql`
-   - **UI:** Add Apollo Angular (`@apollo/client` + `apollo-angular`); generate typed operations via `graphql-codegen`
-   - **Shared schema:** Define `.graphql` schema files in a shared location (e.g. `libs/shared/graphql/schema/` mirrored to API resources) so both sides stay in sync; codegen produces TS types in UI and C# types in API
-   - **Auth:** Reuse JWT bearer + X-Tenant-Id header (resolve tenant in GraphQL middleware identical to REST)
-   - Start with read queries only (Menus, WorkOrders, JobCards), keep mutations on REST until query story stabilizes
+1. ✅ **Skeleton Loader** — `libs/ui/src/lib/skeleton/skeleton.ts` — rectangle/circle/text shapes, pulse/wave CSS animations. No Kendo dependency.
+2. ✅ **`@defer` rollout** — Dashboard all 4 sections use `@defer (when !store.loading())` / `@defer (when store.stats().length > 0)` with skeleton placeholders.
+3. ✅ **Component folder structure** — 5 flat layout components moved to own subfolders. `index.ts` added to 20+ components across `libs/feature/dashboard/` and `libs/ui/`.
+4. ✅ **CSS naming convention is BEM** (`myc-{block}__{element}--{modifier}`) — confirmed standard.
+5. ⏳ **Graphify (HotChocolate + Apollo Angular)** — deferred to post-Phase 3. Start with read queries (Menus, WorkOrders, JobCards).
 
 ### Pre-Phase 3 Punch List (Angular — `myc-erp-demo`) — ✅ COMPLETED (PR #7 merged)
 
@@ -313,22 +361,26 @@ All four items below shipped:
 
 ### Suggested Next Action (when you resume)
 
-**Phase 2 completion — API items done, Angular items remain:**
+**Phase 2 is CLOSED. All 10 audit-gap items completed. Next: Phase 3 Prep.**
 
-1. ✅ **AuditLogInterceptor** — done. `AuditLogInterceptor.cs` in `ERP.Persistence/Interceptors/`. `AuditLog` moved to `ERP.SharedKernel.Entities`. Config in `ERP.Persistence/Configurations/`. Wired in `TenantDbContextFactory`.
-2. ✅ **UserPlantAccess enforcement** — done. `PlantAuthorizationBehavior` + `IPlantScopedRequest`. `WorkOrder.PlantId` added + migration.
-3. ✅ **UserPreference store (API)** — done. `UserPreferencesController` + upsert command + queries.
-4. ✅ **Plants CRUD** — done. `PlantsController` + `PlantCommands.cs` + `PlantQueries.cs`.
-5. **Skeleton loader component** in `libs/ui/src/lib/skeleton/` — rectangle/circle/text shapes, pulse/wave animation, width/height inputs.
-6. **`@defer` rollout** — convert all data-loading components to `@defer (when data())` with skeleton placeholders matching final UI shape.
-7. **Multi-hierarchy menu seed** — IdentitySeeder seeds 3-level menu (Module → Parent → Child) so the recursive renderer is exercised.
-8. **Sidebar collapsed-icon expand** — clicking a parent menu icon in collapsed mode should auto-expand the sidebar (not open flyout).
-9. **Component folder structure audit** — every component in its own folder.
-10. **Angular PreferenceStore** — NgRx Signal Store wired to `PUT /api/v1/preferences/{key}` for sidebar-collapsed-state + table filters.
-11. **Graphify (HotChocolate + Apollo Angular)** — start with read queries (Menus, WorkOrders, JobCards) sharing schema between API and UI.
+**Phase 2 final status:**
 
-**After Phase 2 closes:**
-- Phase 3 Prep: sample seed users (Operator/Inspector/Viewer multi-tenant) + tenant dropdown UX + public list-tenants endpoint
+1. ✅ **AuditLogInterceptor** — `AuditLogInterceptor.cs` in `ERP.Persistence/Interceptors/`. `AuditLog` moved to `ERP.SharedKernel.Entities`.
+2. ✅ **UserPlantAccess enforcement** — `PlantAuthorizationBehavior` + `IPlantScopedRequest`. `WorkOrder.PlantId` + migration.
+3. ✅ **UserPreference store (API)** — `UserPreferencesController` + upsert command + queries.
+4. ✅ **Plants CRUD** — `PlantsController` + `PlantCommands.cs` + `PlantQueries.cs`.
+5. ✅ **Skeleton loader component** — `libs/ui/src/lib/skeleton/` (rectangle/circle/text, pulse/wave animations, CSS custom properties).
+6. ✅ **`@defer` rollout** — Dashboard converted: hero-banner, stat-cards-row, charts-row, transactions-table all use `@defer` with skeleton placeholders.
+7. ✅ **Multi-hierarchy menu seed** — IdentitySeeder now seeds Production module with Work Orders (parent) → List/Create/Approvals (children), Job Cards (parent) → List/Create (children). 3-level hierarchy.
+8. ✅ **Sidebar collapsed-icon expand** — `toggleFlyout()` in `MainLayoutComponent`: if `sidebarCollapsed()`, expand only (no flyout). Second click then opens flyout.
+9. ✅ **Component folder structure** — Moved 5 flat layout components into own subfolders (`layout/flyout/`, `layout/header/`, `layout/main-layout/`, `layout/sidebar/`, `layout/submenu/`). Added `index.ts` to 20+ dashboard + ui components.
+10. ✅ **Angular PreferenceStore** — `PreferenceStore` in `libs/data-access/identity/`. API-backed (`PUT /preferences/{key}`) + localStorage fallback. `sidebarCollapsed` computed signal drives `MainLayoutComponent`. Auto-loads on auth, clears on logout.
+
+**Graphify (HotChocolate + Apollo Angular)** — deferred; not started yet.
+
+**Phase 3 Prep (start here next):**
+- Sample seed users (Operator/Inspector/Viewer multi-tenant) — already partially done (sample users in IdentitySeeder for Dev), needs multi-tenant cross-assignment
+- Tenant dropdown UX — public list-tenants endpoint → Angular tenant selector at login
 - Phase 3: SignalR (job card status broadcasts, QA alerts, tenant-scoped hub groups)
 
 ## Important Notes

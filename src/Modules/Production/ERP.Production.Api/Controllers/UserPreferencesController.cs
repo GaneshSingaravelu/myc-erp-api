@@ -1,6 +1,6 @@
 using ERP.Production.Application.Commands;
 using ERP.Production.Application.Queries;
-using MediatR;
+using Mediator;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 

@@ -6,8 +6,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <!-- Only the lightweight contracts package (INotification interface) — NOT the full MediatR -->
-    <PackageReference Include="MediatR.Contracts" Version="2.0.1" />
+    <!-- Mediator abstractions (INotification, IRequest) — MIT licensed, no commercial restrictions -->
+    <PackageReference Include="Mediator.Abstractions" Version="3.0.2" />
   </ItemGroup>
 
 </Project>

@@ -19,7 +19,7 @@ public class GetWorkOrdersHandler : IQueryHandler<GetWorkOrdersQuery, List<WorkO
         _workOrderRepo = workOrderRepo;
     }
 
-    public async Task<Result<List<WorkOrderListResponse>>> Handle(
+    public async ValueTask<Result<List<WorkOrderListResponse>>> Handle(
         GetWorkOrdersQuery request, CancellationToken cancellationToken)
     {
         var workOrders = request.Status.HasValue

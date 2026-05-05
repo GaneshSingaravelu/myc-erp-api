@@ -44,7 +44,7 @@ public class UpdateJobCardStatusHandler : ICommandHandler<UpdateJobCardStatusCom
         _unitOfWork = unitOfWork;
     }
 
-    public async Task<Result> Handle(UpdateJobCardStatusCommand request, CancellationToken cancellationToken)
+    public async ValueTask<Result> Handle(UpdateJobCardStatusCommand request, CancellationToken cancellationToken)
     {
         var jobCard = await _jobCardRepo.GetByIdAsync(request.JobCardId, cancellationToken);
         if (jobCard is null)

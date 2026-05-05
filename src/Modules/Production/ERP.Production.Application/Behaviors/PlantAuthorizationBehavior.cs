@@ -3,7 +3,7 @@ using ERP.Application.Abstractions.Identity;
 using ERP.Application.Abstractions.Persistence;
 using ERP.Production.Domain.Entities;
 using ERP.SharedKernel.Results;
-using MediatR;
+using Mediator;
 
 namespace ERP.Production.Application.Behaviors;
 
@@ -14,7 +14,7 @@ namespace ERP.Production.Application.Behaviors;
 /// </summary>
 public sealed class PlantAuthorizationBehavior<TRequest, TResponse>
     : IPipelineBehavior<TRequest, TResponse>
-    where TRequest : IRequest<TResponse>
+    where TRequest : notnull, IMessage
     where TResponse : Result
 {
     private readonly ICurrentUserService _currentUser;
@@ -28,13 +28,13 @@ public sealed class PlantAuthorizationBehavior<TRequest, TResponse>
         _plantAccessRepo = plantAccessRepo;
     }
 
-    public async Task<TResponse> Handle(
+    public async ValueTask<TResponse> Handle(
         TRequest request,
-        RequestHandlerDelegate<TResponse> next,
+        MessageHandlerDelegate<TRequest, TResponse> next,
         CancellationToken cancellationToken)
     {
         if (request is not IPlantScopedRequest plantRequest)
-            return await next();
+            return await next(request, cancellationToken);
 
         if (!Guid.TryParse(_currentUser.UserId, out var userId))
             return Fail("You must be authenticated to perform this action.");
@@ -49,7 +49,7 @@ public sealed class PlantAuthorizationBehavior<TRequest, TResponse>
         if (!hasAccess)
             return Fail($"You do not have sufficient access to plant '{plantRequest.PlantId}'.");
 
-        return await next();
+        return await next(request, cancellationToken);
     }
 
     // Creates a TResponse (which is Result or Result<T>) carrying the Unauthorized error.

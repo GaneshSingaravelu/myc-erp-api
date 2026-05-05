@@ -22,7 +22,7 @@ public class UpdateProcessTemplateHandler : ICommandHandler<UpdateProcessTemplat
         _unitOfWork = unitOfWork;
     }
 
-    public async Task<Result> Handle(UpdateProcessTemplateCommand request, CancellationToken cancellationToken)
+    public async ValueTask<Result> Handle(UpdateProcessTemplateCommand request, CancellationToken cancellationToken)
     {
         var template = await _templateRepo.GetByIdAsync(request.Id, cancellationToken);
         if (template is null)

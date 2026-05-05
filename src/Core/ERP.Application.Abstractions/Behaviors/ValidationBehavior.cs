@@ -1,6 +1,6 @@
 using ERP.SharedKernel.Results;
 using FluentValidation;
-using MediatR;
+using Mediator;
 
 namespace ERP.Application.Abstractions.Behaviors;
 
@@ -42,7 +42,7 @@ namespace ERP.Application.Abstractions.Behaviors;
 ///    You don't need to call it manually — it's registered in DI.
 /// </summary>
 public sealed class ValidationBehavior<TRequest, TResponse> : IPipelineBehavior<TRequest, TResponse>
-    where TRequest : IRequest<TResponse>
+    where TRequest : notnull, IMessage
     where TResponse : Result
 {
     private readonly IEnumerable<IValidator<TRequest>> _validators;
@@ -52,41 +52,31 @@ public sealed class ValidationBehavior<TRequest, TResponse> : IPipelineBehavior<
         _validators = validators;
     }
 
-    public async Task<TResponse> Handle(
+    public async ValueTask<TResponse> Handle(
         TRequest request,
-        RequestHandlerDelegate<TResponse> next,
+        MessageHandlerDelegate<TRequest, TResponse> next,
         CancellationToken cancellationToken)
     {
-        // If no validators exist for this request, skip validation
         if (!_validators.Any())
-            return await next();
+            return await next(request, cancellationToken);
 
-        // Run all validators
         var context = new ValidationContext<TRequest>(request);
         var validationResults = await Task.WhenAll(
             _validators.Select(v => v.ValidateAsync(context, cancellationToken)));
 
-        // Collect all errors
         var errors = validationResults
             .SelectMany(r => r.Errors)
             .Where(e => e is not null)
             .ToList();
 
-        // If there are errors, return failure WITHOUT calling the handler
         if (errors.Count != 0)
         {
             var errorMessages = string.Join("; ", errors.Select(e => e.ErrorMessage));
-
-            // Create a failure result with validation error
-            // We need to construct the right Result<T> type dynamically
             var error = Error.Validation("Validation.Failed", errorMessages);
 
-            // If TResponse is Result<SomeType>, create Result.Failure<SomeType>(error)
-            // If TResponse is Result, create Result.Failure(error)
             if (typeof(TResponse) == typeof(Result))
                 return (TResponse)(object)Result.Failure(error);
 
-            // For Result<T>, we need to use reflection to call Result.Failure<T>(error)
             var resultType = typeof(TResponse).GetGenericArguments()[0];
             var failureMethod = typeof(Result)
                 .GetMethod(nameof(Result.Failure), 1, [typeof(Error)])!
@@ -95,7 +85,6 @@ public sealed class ValidationBehavior<TRequest, TResponse> : IPipelineBehavior<
             return (TResponse)failureMethod.Invoke(null, [error])!;
         }
 
-        // All validations passed — proceed to the handler
-        return await next();
+        return await next(request, cancellationToken);
     }
 }

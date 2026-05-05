@@ -23,7 +23,7 @@ public class DeleteProcessTemplateHandler : ICommandHandler<DeleteProcessTemplat
         _unitOfWork = unitOfWork;
     }
 
-    public async Task<Result> Handle(DeleteProcessTemplateCommand request, CancellationToken cancellationToken)
+    public async ValueTask<Result> Handle(DeleteProcessTemplateCommand request, CancellationToken cancellationToken)
     {
         var template = await _templateRepo.GetByIdAsync(request.Id, cancellationToken);
         if (template is null)

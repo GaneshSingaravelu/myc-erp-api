@@ -24,7 +24,7 @@ public class UpdateWorkOrderHandler : ICommandHandler<UpdateWorkOrderCommand>
         _unitOfWork = unitOfWork;
     }
 
-    public async Task<Result> Handle(UpdateWorkOrderCommand request, CancellationToken cancellationToken)
+    public async ValueTask<Result> Handle(UpdateWorkOrderCommand request, CancellationToken cancellationToken)
     {
         var workOrder = await _workOrderRepo.GetByIdAsync(request.Id, cancellationToken);
         if (workOrder is null)

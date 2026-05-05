@@ -19,7 +19,7 @@ public class RemoveProcessStepHandler : ICommandHandler<RemoveProcessStepCommand
         _unitOfWork = unitOfWork;
     }
 
-    public async Task<Result> Handle(RemoveProcessStepCommand request, CancellationToken cancellationToken)
+    public async ValueTask<Result> Handle(RemoveProcessStepCommand request, CancellationToken cancellationToken)
     {
         var step = await _stepRepo.GetByIdAsync(request.StepId, cancellationToken);
         if (step is null)

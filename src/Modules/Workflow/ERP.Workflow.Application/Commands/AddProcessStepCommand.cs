@@ -28,7 +28,7 @@ public class AddProcessStepHandler : ICommandHandler<AddProcessStepCommand, Guid
         _unitOfWork = unitOfWork;
     }
 
-    public async Task<Result<Guid>> Handle(AddProcessStepCommand request, CancellationToken cancellationToken)
+    public async ValueTask<Result<Guid>> Handle(AddProcessStepCommand request, CancellationToken cancellationToken)
     {
         var template = await _templateRepo.GetByIdAsync(request.TemplateId, cancellationToken);
         if (template is null)
