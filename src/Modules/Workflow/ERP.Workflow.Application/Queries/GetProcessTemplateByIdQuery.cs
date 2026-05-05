@@ -19,7 +19,7 @@ public class GetProcessTemplateByIdHandler
         _templateRepo = templateRepo;
     }
 
-    public async Task<Result<ProcessTemplateResponse>> Handle(
+    public async ValueTask<Result<ProcessTemplateResponse>> Handle(
         GetProcessTemplateByIdQuery request, CancellationToken cancellationToken)
     {
         var template = await _templateRepo.GetByIdAsync(request.Id, cancellationToken);

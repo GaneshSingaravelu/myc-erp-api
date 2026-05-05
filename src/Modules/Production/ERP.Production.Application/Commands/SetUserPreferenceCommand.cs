@@ -25,7 +25,7 @@ public class SetUserPreferenceHandler : ICommandHandler<SetUserPreferenceCommand
         _unitOfWork = unitOfWork;
     }
 
-    public async Task<Result> Handle(SetUserPreferenceCommand request, CancellationToken cancellationToken)
+    public async ValueTask<Result> Handle(SetUserPreferenceCommand request, CancellationToken cancellationToken)
     {
         if (!Guid.TryParse(_currentUser.UserId, out var userId))
             return Result.Failure(Error.Unauthorized("User identity is missing."));

@@ -25,7 +25,7 @@ public class GetUserPreferenceHandler : IQueryHandler<GetUserPreferenceQuery, Us
         _currentUser = currentUser;
     }
 
-    public async Task<Result<UserPreferenceResponse>> Handle(
+    public async ValueTask<Result<UserPreferenceResponse>> Handle(
         GetUserPreferenceQuery request, CancellationToken cancellationToken)
     {
         if (!Guid.TryParse(_currentUser.UserId, out var userId))
@@ -54,7 +54,7 @@ public class GetAllUserPreferencesHandler : IQueryHandler<GetAllUserPreferencesQ
         _currentUser = currentUser;
     }
 
-    public async Task<Result<List<UserPreferenceResponse>>> Handle(
+    public async ValueTask<Result<List<UserPreferenceResponse>>> Handle(
         GetAllUserPreferencesQuery request, CancellationToken cancellationToken)
     {
         if (!Guid.TryParse(_currentUser.UserId, out var userId))

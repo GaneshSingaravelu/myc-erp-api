@@ -29,7 +29,7 @@ public class UpdateProcessStepHandler : ICommandHandler<UpdateProcessStepCommand
         _unitOfWork = unitOfWork;
     }
 
-    public async Task<Result> Handle(UpdateProcessStepCommand request, CancellationToken cancellationToken)
+    public async ValueTask<Result> Handle(UpdateProcessStepCommand request, CancellationToken cancellationToken)
     {
         var step = await _stepRepo.GetByIdAsync(request.StepId, cancellationToken);
         if (step is null)

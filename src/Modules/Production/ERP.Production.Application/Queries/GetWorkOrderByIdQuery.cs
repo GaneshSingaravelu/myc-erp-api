@@ -18,7 +18,7 @@ public class GetWorkOrderByIdHandler : IQueryHandler<GetWorkOrderByIdQuery, Work
         _workOrderRepo = workOrderRepo;
     }
 
-    public async Task<Result<WorkOrderResponse>> Handle(
+    public async ValueTask<Result<WorkOrderResponse>> Handle(
         GetWorkOrderByIdQuery request, CancellationToken cancellationToken)
     {
         var workOrder = await _workOrderRepo.GetByIdAsync(request.Id, cancellationToken);

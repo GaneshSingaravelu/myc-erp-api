@@ -20,7 +20,7 @@ public class GetProcessTemplatesHandler
         _templateRepo = templateRepo;
     }
 
-    public async Task<Result<List<ProcessTemplateListResponse>>> Handle(
+    public async ValueTask<Result<List<ProcessTemplateListResponse>>> Handle(
         GetProcessTemplatesQuery request, CancellationToken cancellationToken)
     {
         var templates = request.IncludeInactive

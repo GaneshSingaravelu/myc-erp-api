@@ -17,7 +17,7 @@ public class GetPlantsHandler : IQueryHandler<GetPlantsQuery, List<PlantResponse
 
     public GetPlantsHandler(IRepository<Plant> repo) => _repo = repo;
 
-    public async Task<Result<List<PlantResponse>>> Handle(
+    public async ValueTask<Result<List<PlantResponse>>> Handle(
         GetPlantsQuery request, CancellationToken cancellationToken)
     {
         var plants = request.ActiveOnly
@@ -41,7 +41,7 @@ public class GetPlantByIdHandler : IQueryHandler<GetPlantByIdQuery, PlantRespons
 
     public GetPlantByIdHandler(IRepository<Plant> repo) => _repo = repo;
 
-    public async Task<Result<PlantResponse>> Handle(
+    public async ValueTask<Result<PlantResponse>> Handle(
         GetPlantByIdQuery request, CancellationToken cancellationToken)
     {
         var plant = await _repo.GetByIdAsync(request.Id, cancellationToken);

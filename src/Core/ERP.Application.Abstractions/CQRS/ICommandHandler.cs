@@ -1,5 +1,5 @@
 using ERP.SharedKernel.Results;
-using MediatR;
+using Mediator;
 
 namespace ERP.Application.Abstractions.CQRS;
 

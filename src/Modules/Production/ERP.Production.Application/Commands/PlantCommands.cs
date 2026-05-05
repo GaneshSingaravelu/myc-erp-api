@@ -20,7 +20,7 @@ public class CreatePlantHandler : ICommandHandler<CreatePlantCommand, Guid>
         _unitOfWork = unitOfWork;
     }
 
-    public async Task<Result<Guid>> Handle(CreatePlantCommand request, CancellationToken cancellationToken)
+    public async ValueTask<Result<Guid>> Handle(CreatePlantCommand request, CancellationToken cancellationToken)
     {
         var exists = await _repo.AnyAsync(p => p.Code == request.Code, cancellationToken);
         if (exists)
@@ -57,7 +57,7 @@ public class UpdatePlantHandler : ICommandHandler<UpdatePlantCommand>
         _unitOfWork = unitOfWork;
     }
 
-    public async Task<Result> Handle(UpdatePlantCommand request, CancellationToken cancellationToken)
+    public async ValueTask<Result> Handle(UpdatePlantCommand request, CancellationToken cancellationToken)
     {
         var plant = await _repo.GetByIdAsync(request.Id, cancellationToken);
         if (plant is null)
@@ -89,7 +89,7 @@ public class DeletePlantHandler : ICommandHandler<DeletePlantCommand>
         _unitOfWork = unitOfWork;
     }
 
-    public async Task<Result> Handle(DeletePlantCommand request, CancellationToken cancellationToken)
+    public async ValueTask<Result> Handle(DeletePlantCommand request, CancellationToken cancellationToken)
     {
         var plant = await _repo.GetByIdAsync(request.Id, cancellationToken);
         if (plant is null)

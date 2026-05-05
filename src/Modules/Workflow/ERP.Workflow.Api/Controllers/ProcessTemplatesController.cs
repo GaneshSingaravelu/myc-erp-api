@@ -1,7 +1,7 @@
 using ERP.Workflow.Application.Commands;
 using ERP.Workflow.Application.DTOs;
 using ERP.Workflow.Application.Queries;
-using MediatR;
+using Mediator;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 

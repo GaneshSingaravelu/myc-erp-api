@@ -26,7 +26,7 @@ public class CreateWorkOrderHandler : ICommandHandler<CreateWorkOrderCommand, Gu
         _unitOfWork = unitOfWork;
     }
 
-    public async Task<Result<Guid>> Handle(CreateWorkOrderCommand request, CancellationToken cancellationToken)
+    public async ValueTask<Result<Guid>> Handle(CreateWorkOrderCommand request, CancellationToken cancellationToken)
     {
         var exists = await _workOrderRepo.AnyAsync(
             wo => wo.OrderNumber == request.OrderNumber, cancellationToken);

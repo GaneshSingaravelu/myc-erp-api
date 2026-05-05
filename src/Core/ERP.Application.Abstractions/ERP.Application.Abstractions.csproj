@@ -10,8 +10,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- MediatR: Implements Mediator pattern for CQRS (Commands/Queries) -->
-    <PackageReference Include="MediatR" Version="14.1.0" />
+    <!-- Mediator: MIT-licensed CQRS mediator (replaces MediatR RPL-1.5) -->
+    <PackageReference Include="Mediator.Abstractions" Version="3.0.2" />
 
     <!-- FluentValidation: Declarative validation rules for commands/queries -->
     <PackageReference Include="FluentValidation" Version="12.1.1" />

@@ -1,5 +1,5 @@
 using ERP.SharedKernel.Entities;
-using MediatR;
+using Mediator;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 
@@ -19,16 +19,16 @@ namespace ERP.Persistence.Interceptors;
 /// 2. SaveChangesAsync() is called
 /// 3. Data is saved to database
 /// 4. THIS interceptor collects all domain events from saved entities
-/// 5. Publishes each event via MediatR
+/// 5. Publishes each event via Mediator
 /// 6. Event handlers react (send notifications, update related data, etc.)
 /// </summary>
 public sealed class DomainEventDispatcherInterceptor : SaveChangesInterceptor
 {
-    private readonly IPublisher _publisher;
+    private readonly IMediator _mediator;
 
-    public DomainEventDispatcherInterceptor(IPublisher publisher)
+    public DomainEventDispatcherInterceptor(IMediator mediator)
     {
-        _publisher = publisher;
+        _mediator = mediator;
     }
 
     public override async ValueTask<int> SavedChangesAsync(
@@ -50,10 +50,10 @@ public sealed class DomainEventDispatcherInterceptor : SaveChangesInterceptor
             })
             .ToList();
 
-        // Publish each event — handlers are called via MediatR
+        // Publish each event — handlers are called via Mediator
         foreach (var domainEvent in domainEvents)
         {
-            await _publisher.Publish(domainEvent, cancellationToken);
+            await _mediator.Publish(domainEvent, cancellationToken);
         }
 
         return result;

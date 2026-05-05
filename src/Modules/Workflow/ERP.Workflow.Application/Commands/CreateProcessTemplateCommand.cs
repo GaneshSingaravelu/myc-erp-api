@@ -29,7 +29,7 @@ public class CreateProcessTemplateHandler : ICommandHandler<CreateProcessTemplat
         _unitOfWork = unitOfWork;
     }
 
-    public async Task<Result<Guid>> Handle(CreateProcessTemplateCommand request, CancellationToken cancellationToken)
+    public async ValueTask<Result<Guid>> Handle(CreateProcessTemplateCommand request, CancellationToken cancellationToken)
     {
         // Check for duplicate active template name
         var exists = await _templateRepo.AnyAsync(

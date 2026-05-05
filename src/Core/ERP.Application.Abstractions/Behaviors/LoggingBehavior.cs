@@ -1,5 +1,5 @@
 using System.Diagnostics;
-using MediatR;
+using Mediator;
 using Microsoft.Extensions.Logging;
 
 namespace ERP.Application.Abstractions.Behaviors;
@@ -20,7 +20,7 @@ namespace ERP.Application.Abstractions.Behaviors;
 /// in the ERP.Infrastructure project. This is Dependency Inversion in action.
 /// </summary>
 public sealed class LoggingBehavior<TRequest, TResponse> : IPipelineBehavior<TRequest, TResponse>
-    where TRequest : IRequest<TResponse>
+    where TRequest : notnull, IMessage
 {
     private readonly ILogger<LoggingBehavior<TRequest, TResponse>> _logger;
 
@@ -29,9 +29,9 @@ public sealed class LoggingBehavior<TRequest, TResponse> : IPipelineBehavior<TRe
         _logger = logger;
     }
 
-    public async Task<TResponse> Handle(
+    public async ValueTask<TResponse> Handle(
         TRequest request,
-        RequestHandlerDelegate<TResponse> next,
+        MessageHandlerDelegate<TRequest, TResponse> next,
         CancellationToken cancellationToken)
     {
         var requestName = typeof(TRequest).Name;
@@ -39,7 +39,7 @@ public sealed class LoggingBehavior<TRequest, TResponse> : IPipelineBehavior<TRe
         _logger.LogInformation("Handling {RequestName}: {@Request}", requestName, request);
 
         var stopwatch = Stopwatch.StartNew();
-        var response = await next();
+        var response = await next(request, cancellationToken);
         stopwatch.Stop();
 
         if (stopwatch.ElapsedMilliseconds > 500)
