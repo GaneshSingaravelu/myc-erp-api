@@ -81,6 +81,9 @@ public sealed class UserRepository : IUserRepository
     public Task<bool> ExistsByNormalizedEmailAsync(string normalizedEmail, CancellationToken cancellationToken = default)
         => _context.Set<AppUser>().AnyAsync(u => u.NormalizedEmail == normalizedEmail, cancellationToken);
 
+    public Task<AppUser?> GetByNormalizedEmailAsync(string normalizedEmail, CancellationToken cancellationToken = default)
+        => _context.Set<AppUser>().FirstOrDefaultAsync(u => u.NormalizedEmail == normalizedEmail, cancellationToken);
+
     public async Task AddAsync(AppUser user, CancellationToken cancellationToken = default)
         => await _context.Set<AppUser>().AddAsync(user, cancellationToken);
 

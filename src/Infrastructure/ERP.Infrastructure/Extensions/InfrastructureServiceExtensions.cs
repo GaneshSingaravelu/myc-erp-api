@@ -1,7 +1,9 @@
 using ERP.Application.Abstractions.Caching;
+using ERP.Application.Abstractions.Email;
 using ERP.Application.Abstractions.Identity;
 using ERP.Application.Abstractions.MultiTenancy;
 using ERP.Infrastructure.Caching;
+using ERP.Infrastructure.Email;
 using ERP.Infrastructure.Tenant;
 using ERP.Persistence.Context;
 using ERP.Persistence.Interceptors;
@@ -134,6 +136,13 @@ public static class InfrastructureServiceExtensions
         // {
         //     options.Configuration = configuration.GetConnectionString("Redis");
         // });
+
+        // ──────────────────────────────────────────────────────
+        // EMAIL (MailKit SMTP)
+        // ──────────────────────────────────────────────────────
+
+        services.Configure<EmailSettings>(configuration.GetSection(EmailSettings.SectionName));
+        services.AddSingleton<IEmailService, SmtpEmailService>();
 
         return services;
     }

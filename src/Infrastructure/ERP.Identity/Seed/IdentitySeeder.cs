@@ -140,14 +140,8 @@ public static class IdentitySeeder
                 }
             }
 
-            // ── MODULES & MENUS (only if no modules exist yet) ───
-            if (!await context.Set<Module>().AnyAsync())
-            {
-                SeedModulesAndMenus(context, permissions);
-                logger.LogInformation("Seeded modules and menus.");
-            }
-
-            await context.SaveChangesAsync();
+            // ── MODULES & MENUS (converge to desired state on every boot) ───
+            await SeedModulesAndMenusAsync(context, permissions, logger);
             logger.LogInformation("Identity seed completed. {PermCount} permissions, 4 roles, modules & menus verified.",
                 permissions.Count);
         }
@@ -384,96 +378,232 @@ public static class IdentitySeeder
     /// Seeds modules (sidebar sections) and menus (navigation items) with permission links.
     /// These define the Angular sidebar structure — filtered per user at runtime by MenuService.
     /// </summary>
-    private static void SeedModulesAndMenus(MasterDbContext context, List<Permission> permissions)
+    // ── Desired-State Records ─────────────────────────────────────────────────
+
+    private sealed record ModuleDef(
+        Guid Id, string Code, string Name, string? Icon, int DisplayOrder);
+
+    // ParentCode = null means top-level menu within its module.
+    private sealed record MenuDef(
+        string Code, string ModuleCode, string Name, string? Icon,
+        string? Route, int DisplayOrder, string? ParentCode = null);
+
+    private sealed record MenuPermDef(string MenuCode, string PermissionCode);
+
+    private static IReadOnlyList<ModuleDef> GetDesiredModules() =>
+    [
+        new(Guid.Parse("30000000-0000-0000-0000-000000000001"), "PRODUCTION",  "Production",       "lucide-factory",      1),
+        new(Guid.Parse("30000000-0000-0000-0000-000000000002"), "QUALITY",     "Quality Assurance","lucide-shield-check", 2),
+        new(Guid.Parse("30000000-0000-0000-0000-000000000003"), "WORKFLOW",    "Workflow Engine",  "lucide-git-branch",   3),
+        new(Guid.Parse("30000000-0000-0000-0000-000000000004"), "ADMIN",       "Administration",   "lucide-settings",    99),
+    ];
+
+    private static IReadOnlyList<MenuDef> GetDesiredMenus() =>
+    [
+        // Production — Work Orders (parent + children)
+        new("MENU_WO",           "PRODUCTION", "Work Orders",         "lucide-clipboard-list", null,                                   1),
+        new("MENU_WO_LIST",      "PRODUCTION", "Work Order List",     "lucide-list",           "/production/work-orders",              1, "MENU_WO"),
+        new("MENU_WO_CREATE",    "PRODUCTION", "Create Work Order",   "lucide-plus-circle",    "/production/work-orders/create",       2, "MENU_WO"),
+        new("MENU_WO_APPROVALS", "PRODUCTION", "Approvals",           "lucide-check-square",   "/production/work-orders/approvals",    3, "MENU_WO"),
+        // Production — Job Cards (parent + children)
+        new("MENU_JC",           "PRODUCTION", "Job Cards",           "lucide-file-text",      null,                                   2),
+        new("MENU_JC_LIST",      "PRODUCTION", "Job Card List",       "lucide-list",           "/production/job-cards",                1, "MENU_JC"),
+        new("MENU_JC_CREATE",    "PRODUCTION", "Create Job Card",     "lucide-plus-circle",    "/production/job-cards/create",         2, "MENU_JC"),
+        // Production — Dashboard (standalone)
+        new("MENU_PROD_DASH",    "PRODUCTION", "Production Dashboard","lucide-bar-chart-3",    "/production/dashboard",                3),
+        // Quality Assurance
+        new("MENU_QA_INSPECT",   "QUALITY",    "QA Inspections",      "lucide-search",         "/quality/inspections",                 1),
+        new("MENU_QA_RESULTS",   "QUALITY",    "QA Results",          "lucide-check-circle",   "/quality/results",                     2),
+        // Workflow Engine
+        new("MENU_WF_TEMPLATES", "WORKFLOW",   "Process Templates",   "lucide-workflow",       "/workflow/templates",                  1),
+        // Administration
+        new("MENU_USERS",        "ADMIN",      "User Management",     "lucide-users",          "/admin/users",                         1),
+        new("MENU_ROLES",        "ADMIN",      "Role Management",     "lucide-shield",         "/admin/roles",                         2),
+        new("MENU_TENANTS",      "ADMIN",      "Tenant Management",   "lucide-building-2",     "/admin/tenants",                       3),
+    ];
+
+    private static IReadOnlyList<MenuPermDef> GetDesiredMenuPermissions() =>
+    [
+        new("MENU_WO",           "workorder.view"),
+        new("MENU_WO_LIST",      "workorder.view"),
+        new("MENU_WO_CREATE",    "workorder.create"),
+        new("MENU_WO_APPROVALS", "workorder.view"),
+        new("MENU_JC",           "jobcard.view"),
+        new("MENU_JC_LIST",      "jobcard.view"),
+        new("MENU_JC_CREATE",    "jobcard.create"),
+        new("MENU_PROD_DASH",    "production.view"),
+        new("MENU_QA_INSPECT",   "qa.inspect"),
+        new("MENU_QA_RESULTS",   "qa.view"),
+        new("MENU_WF_TEMPLATES", "workflow.view"),
+        new("MENU_USERS",        "user.view"),
+        new("MENU_ROLES",        "role.view"),
+        // MENU_TENANTS: no permission — visible to all admins via [Authorize(Roles="Admin")]
+    ];
+
+    // ── Convergence Logic ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Converges the database to the desired module/menu state on every boot.
+    ///
+    /// Strategy (similar to Terraform/K8s reconciliation):
+    ///   INSERT  — records defined in code but missing in DB.
+    ///   UPDATE  — records where any field has changed.
+    ///   DEACTIVATE — records in DB but removed from the desired definition
+    ///                (soft-delete: IsVisible=false / IsActive=false).
+    ///   RE-ACTIVATE — records that were soft-deleted but are back in the definition.
+    ///
+    /// Uses Code as the stable business key (not DB-generated GUIDs).
+    /// </summary>
+    private static async Task SeedModulesAndMenusAsync(
+        MasterDbContext context,
+        List<Permission> permissions,
+        ILogger logger)
     {
         var permLookup = permissions.ToDictionary(p => p.Code, p => p.Id);
 
-        var now = DateTime.UtcNow;
-        var menuId = 1;
-        Guid NextMenuId() => Guid.Parse($"20000000-0000-0000-0000-{menuId++:D12}");
+        // ── MODULES ──────────────────────────────────────────────────────────
+        var desiredModules = GetDesiredModules();
+        var existingModules = await context.Set<Module>().ToDictionaryAsync(m => m.Code);
+        var moduleIdMap = new Dictionary<string, Guid>();
 
-        // ── MODULE: Production ──
-        var prodModule = new Module
+        foreach (var def in desiredModules)
         {
-            Id = Guid.Parse("30000000-0000-0000-0000-000000000001"),
-            Code = "PRODUCTION",
-            Name = "Production",
-            Icon = "lucide-factory",
-            DisplayOrder = 1,
-            IsActive = true
-        };
-        context.Set<Module>().Add(prodModule);
+            if (existingModules.TryGetValue(def.Code, out var existing))
+            {
+                moduleIdMap[def.Code] = existing.Id;
+                if (existing.Name != def.Name || existing.Icon != def.Icon ||
+                    existing.DisplayOrder != def.DisplayOrder || !existing.IsActive)
+                {
+                    existing.Name = def.Name;
+                    existing.Icon = def.Icon;
+                    existing.DisplayOrder = def.DisplayOrder;
+                    existing.IsActive = true;
+                }
+            }
+            else
+            {
+                var mod = new Module
+                {
+                    Id = def.Id,
+                    Code = def.Code,
+                    Name = def.Name,
+                    Icon = def.Icon,
+                    DisplayOrder = def.DisplayOrder,
+                    IsActive = true,
+                };
+                context.Set<Module>().Add(mod);
+                existingModules[def.Code] = mod;
+                moduleIdMap[def.Code] = def.Id;
+            }
+        }
 
-        var woMenu = new Menu { Id = NextMenuId(), ModuleId = prodModule.Id, Code = "MENU_WO", Name = "Work Orders", Icon = "lucide-clipboard-list", Route = "/production/work-orders", DisplayOrder = 1, CreatedAt = now };
-        var jcMenu = new Menu { Id = NextMenuId(), ModuleId = prodModule.Id, Code = "MENU_JC", Name = "Job Cards", Icon = "lucide-file-text", Route = "/production/job-cards", DisplayOrder = 2, CreatedAt = now };
-        var prodDash = new Menu { Id = NextMenuId(), ModuleId = prodModule.Id, Code = "MENU_PROD_DASH", Name = "Production Dashboard", Icon = "lucide-bar-chart-3", Route = "/production/dashboard", DisplayOrder = 3, CreatedAt = now };
+        // Deactivate modules removed from the desired definition
+        var desiredModuleCodes = desiredModules.Select(d => d.Code).ToHashSet();
+        foreach (var mod in existingModules.Values.Where(m => !desiredModuleCodes.Contains(m.Code) && m.IsActive))
+            mod.IsActive = false;
 
-        context.Set<Menu>().AddRange(woMenu, jcMenu, prodDash);
+        await context.SaveChangesAsync();
 
-        // Link menus to permissions
-        context.Set<MenuPermission>().AddRange(
-            new MenuPermission { Id = NextMenuId(), MenuId = woMenu.Id, PermissionId = permLookup["workorder.view"], IsRequired = true },
-            new MenuPermission { Id = NextMenuId(), MenuId = jcMenu.Id, PermissionId = permLookup["jobcard.view"], IsRequired = true },
-            new MenuPermission { Id = NextMenuId(), MenuId = prodDash.Id, PermissionId = permLookup["production.view"], IsRequired = true });
+        // ── MENUS ─────────────────────────────────────────────────────────────
+        var desiredMenus = GetDesiredMenus();
+        var existingMenus = await context.Set<Menu>().ToDictionaryAsync(m => m.Code);
+        var menuIdMap = new Dictionary<string, Guid>();
 
-        // ── MODULE: Quality ──
-        var qaModule = new Module
+        // Top-level first so children can resolve ParentMenuId from menuIdMap
+        var ordered = desiredMenus.OrderBy(m => m.ParentCode is null ? 0 : 1).ToList();
+        int inserted = 0, updated = 0;
+
+        foreach (var def in ordered)
         {
-            Id = Guid.Parse("30000000-0000-0000-0000-000000000002"),
-            Code = "QUALITY",
-            Name = "Quality Assurance",
-            Icon = "lucide-shield-check",
-            DisplayOrder = 2,
-            IsActive = true
-        };
-        context.Set<Module>().Add(qaModule);
+            var moduleId = moduleIdMap[def.ModuleCode];
+            Guid? parentId = def.ParentCode is not null
+                ? menuIdMap.GetValueOrDefault(def.ParentCode)
+                : null;
 
-        var qaInspect = new Menu { Id = NextMenuId(), ModuleId = qaModule.Id, Code = "MENU_QA_INSPECT", Name = "QA Inspections", Icon = "lucide-search", Route = "/quality/inspections", DisplayOrder = 1, CreatedAt = now };
-        var qaResults = new Menu { Id = NextMenuId(), ModuleId = qaModule.Id, Code = "MENU_QA_RESULTS", Name = "QA Results", Icon = "lucide-check-circle", Route = "/quality/results", DisplayOrder = 2, CreatedAt = now };
+            if (existingMenus.TryGetValue(def.Code, out var existing))
+            {
+                menuIdMap[def.Code] = existing.Id;
+                if (existing.Name != def.Name || existing.Icon != def.Icon ||
+                    existing.Route != def.Route || existing.DisplayOrder != def.DisplayOrder ||
+                    existing.ParentMenuId != parentId || existing.ModuleId != moduleId ||
+                    !existing.IsVisible || !existing.IsEnabled)
+                {
+                    existing.Name = def.Name;
+                    existing.Icon = def.Icon;
+                    existing.Route = def.Route;
+                    existing.DisplayOrder = def.DisplayOrder;
+                    existing.ParentMenuId = parentId;
+                    existing.ModuleId = moduleId;
+                    existing.IsVisible = true;
+                    existing.IsEnabled = true;
+                    updated++;
+                }
+            }
+            else
+            {
+                var menu = new Menu
+                {
+                    Id = Guid.NewGuid(),
+                    Code = def.Code,
+                    ModuleId = moduleId,
+                    ParentMenuId = parentId,
+                    Name = def.Name,
+                    Icon = def.Icon,
+                    Route = def.Route,
+                    DisplayOrder = def.DisplayOrder,
+                    CreatedAt = DateTime.UtcNow,
+                };
+                context.Set<Menu>().Add(menu);
+                existingMenus[def.Code] = menu;
+                menuIdMap[def.Code] = menu.Id;
+                inserted++;
+            }
+        }
 
-        context.Set<Menu>().AddRange(qaInspect, qaResults);
-        context.Set<MenuPermission>().AddRange(
-            new MenuPermission { Id = NextMenuId(), MenuId = qaInspect.Id, PermissionId = permLookup["qa.inspect"], IsRequired = true },
-            new MenuPermission { Id = NextMenuId(), MenuId = qaResults.Id, PermissionId = permLookup["qa.view"], IsRequired = true });
-
-        // ── MODULE: Workflow ──
-        var wfModule = new Module
+        // Soft-delete menus removed from the desired definition
+        var desiredMenuCodes = desiredMenus.Select(d => d.Code).ToHashSet();
+        int deactivated = 0;
+        foreach (var menu in existingMenus.Values.Where(m => !desiredMenuCodes.Contains(m.Code) && m.IsVisible))
         {
-            Id = Guid.Parse("30000000-0000-0000-0000-000000000003"),
-            Code = "WORKFLOW",
-            Name = "Workflow Engine",
-            Icon = "lucide-git-branch",
-            DisplayOrder = 3,
-            IsActive = true
-        };
-        context.Set<Module>().Add(wfModule);
+            menu.IsVisible = false;
+            deactivated++;
+        }
 
-        var wfTemplates = new Menu { Id = NextMenuId(), ModuleId = wfModule.Id, Code = "MENU_WF_TEMPLATES", Name = "Process Templates", Icon = "lucide-workflow", Route = "/workflow/templates", DisplayOrder = 1, CreatedAt = now };
+        await context.SaveChangesAsync();
 
-        context.Set<Menu>().Add(wfTemplates);
-        context.Set<MenuPermission>().Add(
-            new MenuPermission { Id = NextMenuId(), MenuId = wfTemplates.Id, PermissionId = permLookup["workflow.view"], IsRequired = true });
+        // ── MENU PERMISSIONS ─────────────────────────────────────────────────
+        var existingPermPairs = await context.Set<MenuPermission>()
+            .Select(mp => new { mp.MenuId, mp.PermissionId })
+            .ToListAsync();
+        var existingPermSet = existingPermPairs
+            .Select(mp => (mp.MenuId, mp.PermissionId))
+            .ToHashSet();
 
-        // ── MODULE: Administration ──
-        var adminModule = new Module
+        var newPerms = new List<MenuPermission>();
+        foreach (var def in GetDesiredMenuPermissions())
         {
-            Id = Guid.Parse("30000000-0000-0000-0000-000000000004"),
-            Code = "ADMIN",
-            Name = "Administration",
-            Icon = "lucide-settings",
-            DisplayOrder = 99,
-            IsActive = true
-        };
-        context.Set<Module>().Add(adminModule);
+            if (!menuIdMap.TryGetValue(def.MenuCode, out var menuId)) continue;
+            if (!permLookup.TryGetValue(def.PermissionCode, out var permId)) continue;
+            if (!existingPermSet.Contains((menuId, permId)))
+            {
+                newPerms.Add(new MenuPermission
+                {
+                    Id = Guid.NewGuid(),
+                    MenuId = menuId,
+                    PermissionId = permId,
+                    IsRequired = true,
+                });
+            }
+        }
 
-        var usersMenu = new Menu { Id = NextMenuId(), ModuleId = adminModule.Id, Code = "MENU_USERS", Name = "User Management", Icon = "lucide-users", Route = "/admin/users", DisplayOrder = 1, CreatedAt = now };
-        var rolesMenu = new Menu { Id = NextMenuId(), ModuleId = adminModule.Id, Code = "MENU_ROLES", Name = "Role Management", Icon = "lucide-shield", Route = "/admin/roles", DisplayOrder = 2, CreatedAt = now };
-        var tenantsMenu = new Menu { Id = NextMenuId(), ModuleId = adminModule.Id, Code = "MENU_TENANTS", Name = "Tenant Management", Icon = "lucide-building-2", Route = "/admin/tenants", DisplayOrder = 3, CreatedAt = now };
+        if (newPerms.Count > 0)
+        {
+            context.Set<MenuPermission>().AddRange(newPerms);
+            await context.SaveChangesAsync();
+        }
 
-        context.Set<Menu>().AddRange(usersMenu, rolesMenu, tenantsMenu);
-        context.Set<MenuPermission>().AddRange(
-            new MenuPermission { Id = NextMenuId(), MenuId = usersMenu.Id, PermissionId = permLookup["user.view"], IsRequired = true },
-            new MenuPermission { Id = NextMenuId(), MenuId = rolesMenu.Id, PermissionId = permLookup["role.view"], IsRequired = true });
-        // tenantsMenu: no permission link — visible to all admins via [Authorize(Roles = "Admin")]
+        logger.LogInformation(
+            "Menu seed: {Ins} inserted, {Upd} updated, {Del} deactivated, {Perm} permissions added.",
+            inserted, updated, deactivated, newPerms.Count);
     }
 }

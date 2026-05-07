@@ -41,7 +41,7 @@ public class MenusController : ControllerBase
         if (userIdClaim is null || !Guid.TryParse(userIdClaim, out var userId))
             return Unauthorized();
 
-        // Read the tenant resolved by TenantMiddleware.
+        // Read the tenant resolved by TenantMiddleware.  
         // tenantId is nullable so feature-flag filtering degrades gracefully
         // if the middleware was bypassed (e.g., in tests).
         Guid? tenantId = HttpContext.Items["CurrentTenant"] is TenantInfo tenant

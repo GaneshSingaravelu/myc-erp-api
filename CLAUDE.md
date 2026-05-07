@@ -214,6 +214,9 @@ dotnet test ERP.slnx
 | `@module-federation/enhanced` | MIT | ✅ |
 | `@testing-library/*`, `jest-preset-angular` | MIT | ✅ Test tools only |
 | `@nx/*` | MIT | ✅ |
+| `exceljs` | MIT | ✅ Grid export to .xlsx |
+| `pdfmake` | MIT | ✅ Grid export to PDF (declarative table API) |
+| `file-saver` | MIT | ✅ Trigger browser file downloads |
 
 **Grid library — status: pending decision**
 
@@ -238,6 +241,7 @@ dotnet test ERP.slnx
 | `NetArchTest.Rules` | MIT | ✅ Test tool only |
 | `xunit`, `Moq`, `coverlet.collector` | Apache 2.0 / BSD-3 / MIT | ✅ Test tools only |
 | `Mediator.SourceGenerator` + `Mediator.Abstractions` | MIT | ✅ **Active replacement for MediatR** — v3.0.2, source-generated, same IRequest/IRequestHandler API, handlers return ValueTask, behaviors use MessageHandlerDelegate |
+| `MailKit` + `MimeKit` | MIT | ✅ SMTP email sending with attachments. jstedfast/MailKit. Replaces System.Net.Mail (obsolete). |
 
 ### Rejected / Conditional Libraries
 
@@ -280,7 +284,11 @@ If `ngx-cerious-widgets` fails Angular 20 compatibility test:
 - [x] **Phase 2 UI Polish:** Sidebar brand/footer alignment (host height chain), collapsed section icons with primary color + CSS tooltip, full-height flyout (host + `.myc-flyout { height: 100% }`), real user data in header profile dropdown (AuthStore computed signals), `NavSection.icon` propagated via MenuStore, convergence-based IdentitySeeder (INSERT/UPDATE/SOFT-DELETE/RE-ACTIVATE by Code — idempotent, runs every boot).
 - [x] **License Policy Checkpoint:** Full audit completed 2026-05-05. All Angular deps clean (MIT/Apache). MediatR identified as RPL 1.5 (viral copyleft — must replace). Replacement: `Mediator` by martinothamar (MIT). Policy documented in "Third-Party Library License Policy" section.
 - [x] **MediatR Migration:** Replaced `MediatR` (RPL-1.5) + `MediatR.Contracts` with `Mediator.SourceGenerator` + `Mediator.Abstractions` v3.0.2 (MIT). All 20 handlers migrated (Task→ValueTask), 3 behaviors updated (MessageHandlerDelegate), DomainEventDispatcherInterceptor (IPublisher→IMediator), Program.cs (AddMediatR→AddMediator). Build: 0 errors. Tests: 111/111 + 13/13 ✅
-- [ ] **Phase 2.9 — Admin Foundations** (must complete before Phase 3): Grid component (`ngx-cerious-widgets` wrapper OR Angular CDK fallback, server-side pagination, column config), User Management (Create/Edit with Signal Forms, Activate/Deactivate, Role assignment), Forgot Password flow (email → reset link/OTP → secure reset), Roles & Permissions UI (RBAC table explorer)
+- [x] **Phase 2.9 — Admin Foundations:**
+  - [x] **2.9A — Shared UI Components:** Modal/Dialog (`libs/ui/src/lib/modal/`), ConfirmDialog, CheckboxDropdown (`libs/ui/src/lib/checkbox-dropdown/`), ToastService + ToastContainer (`libs/ui/src/lib/toast/`). All standalone, OnPush, BEM, design tokens.
+  - [x] **2.9B — User Management:** UsersPage + RolesPage refactored to use shared Modal, ConfirmDialog, CheckboxDropdown, ToastService. Delete uses ConfirmDialog instead of `window.confirm`. Toast notifications on all CRUD operations.
+  - [x] **2.9C — Email Service + Forgot/Reset Password:** `IEmailService` abstraction in `ERP.Application.Abstractions.Email`, `SmtpEmailService` (MailKit) in `ERP.Infrastructure.Email`, `EmailSettings` config. `ForgotPasswordAsync` sends email in production, returns token in dev. Angular pages already existed (ForgotPasswordComponent, ResetPasswordComponent).
+  - [x] **2.9D — Grid Export:** `GridExportService` in `libs/ui/src/lib/grid-export/` — ExcelJS (.xlsx), CSV (built-in), pdfmake (PDF). Grid component gets `[exportable]` and `[exportFileName]` inputs. Export buttons appear in grid footer.
 - [ ] Phase 3 Preparation: Sample seed users (Operator, Inspector, Viewer with multi-tenant assignments) + Tenant dropdown UX
 - [ ] Phase 3: SignalR integration (job card status broadcasts, QA alerts, tenant-scoped hub groups)
 - [ ] Phase 4: Reporting (open-source, Angular-compatible)
@@ -378,7 +386,15 @@ All four items below shipped:
 
 **Graphify (HotChocolate + Apollo Angular)** — deferred; not started yet.
 
-**Phase 3 Prep (start here next):**
+**Phase 2.9 — Admin Foundations (start here next):**
+
+**Order of execution:**
+1. **2.9A — Shared UI Components** (Angular): Modal/Dialog, Checkbox Dropdown, Toast/Notification — these are prerequisites for all admin pages
+2. **2.9B — User Management** (Angular + API): Users CRUD page (create/edit modal, activate/deactivate, role assignment), Roles & Permissions page (RBAC explorer) — uses shared components from 2.9A
+3. **2.9C — Email Service + Forgot Password** (API + Angular): MailKit-based `IEmailService` in `ERP.Infrastructure`, SMTP config via `EmailSettings` in appsettings, Forgot Password flow (request → token → email → reset page)
+4. **2.9D — Grid Export** (Angular): ExcelJS (.xlsx), CSV (built-in), pdfmake (PDF) — reusable `GridExportService` in `libs/utils/`, export buttons in Grid component
+
+**Phase 3 Prep (after 2.9):**
 - Sample seed users (Operator/Inspector/Viewer multi-tenant) — already partially done (sample users in IdentitySeeder for Dev), needs multi-tenant cross-assignment
 - Tenant dropdown UX — public list-tenants endpoint → Angular tenant selector at login
 - Phase 3: SignalR (job card status broadcasts, QA alerts, tenant-scoped hub groups)

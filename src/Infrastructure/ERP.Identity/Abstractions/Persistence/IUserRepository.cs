@@ -68,6 +68,9 @@ public interface IUserRepository
     /// <summary>Check whether any user already uses this normalized email.</summary>
     Task<bool> ExistsByNormalizedEmailAsync(string normalizedEmail, CancellationToken cancellationToken = default);
 
+    /// <summary>Find user by normalized (uppercased) email (no related entities loaded). Used for password reset flows.</summary>
+    Task<AppUser?> GetByNormalizedEmailAsync(string normalizedEmail, CancellationToken cancellationToken = default);
+
     /// <summary>Stage a new user for insertion. Persisted on next IMasterUnitOfWork.SaveChangesAsync().</summary>
     Task AddAsync(AppUser user, CancellationToken cancellationToken = default);
 

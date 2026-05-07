@@ -83,6 +83,12 @@ public class AppUser : AuditableEntity
     /// <summary>Force password change on next login (e.g., after admin reset)</summary>
     public bool MustChangePassword { get; set; }
 
+    /// <summary>SHA-256 hash of the password reset token (NULL when no active reset).</summary>
+    public string? PasswordResetTokenHash { get; set; }
+
+    /// <summary>When the password reset token expires (UTC). NULL when no active reset.</summary>
+    public DateTime? PasswordResetTokenExpiry { get; set; }
+
     // ── Navigation Properties ──
 
     /// <summary>Tenant memberships for this user (many-to-many via UserTenants)</summary>

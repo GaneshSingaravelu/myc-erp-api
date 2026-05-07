@@ -3,6 +3,7 @@ using ERP.Application.Abstractions.Identity;
 using ERP.Application.Abstractions.Identity.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Hosting;
 
 namespace ERP.Api.Controllers.v1;
 
@@ -25,10 +26,12 @@ namespace ERP.Api.Controllers.v1;
 public class AuthController : ControllerBase
 {
     private readonly IAuthService _authService;
+    private readonly IWebHostEnvironment _env;
 
-    public AuthController(IAuthService authService)
+    public AuthController(IAuthService authService, IWebHostEnvironment env)
     {
         _authService = authService;
+        _env = env;
     }
 
     /// <summary>
@@ -136,6 +139,42 @@ public class AuthController : ControllerBase
             };
 
         return Ok(new { message = "Password changed successfully. All sessions have been revoked. Please log in again." });
+    }
+
+    /// <summary>
+    /// POST /api/v1/auth/forgot-password
+    /// Requests a password reset token for the given email.
+    /// Always returns 200 (email enumeration prevention). In non-production environments
+    /// the token is included in the response body for smoke testing.
+    /// </summary>
+    [HttpPost("forgot-password")]
+    [AllowAnonymous]
+    public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequest request)
+    {
+        var exposeToken = !_env.IsProduction();
+        var result = await _authService.ForgotPasswordAsync(request, exposeToken);
+        return Ok(result.Value);
+    }
+
+    /// <summary>
+    /// POST /api/v1/auth/reset-password
+    /// Applies a new password using a previously issued reset token.
+    /// </summary>
+    [HttpPost("reset-password")]
+    [AllowAnonymous]
+    public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequest request)
+    {
+        var result = await _authService.ResetPasswordAsync(request);
+
+        if (result.IsFailure)
+            return result.Error.Code switch
+            {
+                "Auth.ResetTokenExpired" => BadRequest(new { error = result.Error.Message }),
+                "Auth.PasswordReused" => BadRequest(new { error = result.Error.Message }),
+                _ => BadRequest(new { error = result.Error.Message })
+            };
+
+        return Ok(new { message = "Password reset successfully. Please log in with your new password." });
     }
 
     private Guid? GetCurrentUserId()

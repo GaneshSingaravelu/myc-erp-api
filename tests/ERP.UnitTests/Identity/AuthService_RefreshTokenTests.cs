@@ -454,6 +454,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
             new MasterUnitOfWork(Context),
             realTokenService,
             CacheMock.Object,
+            EmailServiceMock.Object,
             Options.Create(TestJwtSettings),
             NullLogger<AuthService>.Instance);
 

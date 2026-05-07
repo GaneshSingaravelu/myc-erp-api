@@ -1,5 +1,6 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
+using ERP.Application.Abstractions.Email;
 using ERP.Identity.Abstractions;
 using ERP.Identity.Abstractions.Persistence;
 using ERP.Identity.Configuration;
@@ -28,6 +29,7 @@ public abstract class AuthServiceTestBase : IDisposable
     protected readonly MasterDbContext Context;
     protected readonly Mock<ITokenService> TokenServiceMock;
     protected readonly Mock<IMemoryCache> CacheMock;
+    protected Mock<IEmailService> EmailServiceMock = null!;
     protected readonly AuthService Sut; // System Under Test
 
     protected static readonly JwtSettings TestJwtSettings = new()
@@ -82,6 +84,9 @@ public abstract class AuthServiceTestBase : IDisposable
         var tenants = new TenantRepository(Context);
         var unitOfWork = new MasterUnitOfWork(Context);
 
+        var emailServiceMock = new Mock<IEmailService>();
+        EmailServiceMock = emailServiceMock;
+
         Sut = new AuthService(
             users,
             sessions,
@@ -90,6 +95,7 @@ public abstract class AuthServiceTestBase : IDisposable
             unitOfWork,
             TokenServiceMock.Object,
             CacheMock.Object,
+            emailServiceMock.Object,
             Options.Create(TestJwtSettings),
             NullLogger<AuthService>.Instance);
     }
