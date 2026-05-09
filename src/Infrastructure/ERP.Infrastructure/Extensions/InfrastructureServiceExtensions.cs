@@ -107,7 +107,14 @@ public static class InfrastructureServiceExtensions
         services.AddDbContext<MasterDbContext>((sp, options) =>
         {
             options.UseSqlServer(masterConnectionString, sqlOptions =>
-                sqlOptions.MigrationsAssembly("ERP.Persistence.SqlServer"));
+            {
+                sqlOptions.MigrationsAssembly("ERP.Persistence.SqlServer");
+                sqlOptions.EnableRetryOnFailure(
+                    maxRetryCount: 3,
+                    maxRetryDelay: TimeSpan.FromSeconds(5),
+                    errorNumbersToAdd: null);
+                sqlOptions.CommandTimeout(30);
+            });
             options.AddInterceptors(
                 sp.GetRequiredService<AuditableEntityInterceptor>(),
                 sp.GetRequiredService<DomainEventDispatcherInterceptor>());
