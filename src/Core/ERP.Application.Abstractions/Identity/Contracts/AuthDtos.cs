@@ -85,6 +85,10 @@ public record UpdateUserRequest(
 
 public record AssignRolesRequest(IList<Guid> RoleIds);
 
+public record AssignTenantsRequest(IList<Guid> TenantIds);
+
+public record UserTenantDto(Guid TenantId, string TenantCode, string TenantName, bool IsDefault);
+
 // ──────────────────────────────────────────────────────
 // ROLE DTOs
 // ──────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 # ERP Database Architecture
 
 > Complete reference for all database tables, relationships, and multi-tenant design.
-> Updated: 2026-04-05
+> Updated: 2026-05-09
 
 ## Table of Contents
 
@@ -11,6 +11,7 @@
 4. [Seeded Data](#seeded-data)
 5. [Entity Relationship Diagrams](#entity-relationship-diagrams)
 6. [Data Flow](#data-flow)
+7. [Concrete Example: Admin User Flow](#concrete-example-admin-user-flow)
 
 ---
 
@@ -769,3 +770,222 @@ JWT contains:
 5. Handler → Query work orders from ERP_ABC
 6. Response → Angular
 ```
+
+---
+
+## Concrete Example: Admin User Flow
+
+> This section traces the seeded **admin** user through every database table,
+> using actual seed values. Read this to understand how tables connect in practice.
+
+### Step 1 — Login (`POST /api/v1/auth/login`)
+
+**Request:**
+```json
+{ "userName": "admin", "password": "Admin@123", "tenantCode": "ABC" }
+```
+
+**Tables queried (in order):**
+
+| # | Table | Query | Result |
+|---|-------|-------|--------|
+| 1 | `Users` | `WHERE UserName = 'admin'` | Returns user row (Id, PasswordHash, IsActive, IsLocked, LockoutEnd, SecurityStamp, AccessFailedCount) |
+| 2 | — | BCrypt.Verify(password, PasswordHash) | ✅ Match — `AccessFailedCount` stays 0 |
+| 3 | `Tenants` | `WHERE Code = 'ABC' AND IsActive = 1` | Returns tenant row (Id, ConnectionString, DbProvider) |
+| 4 | `UserTenants` | `WHERE UserId = {adminId} AND TenantId = {abcId}` | Confirms admin is assigned to tenant ABC |
+| 5 | `UserRoles` | `WHERE UserId = {adminId}` | Returns role assignment(s) — includes `TenantId` for scoping |
+| 6 | `Roles` | `WHERE Id IN (...)` via UserRoles | Returns "Admin" role |
+| 7 | `RolePermissions` | `WHERE RoleId = {adminRoleId}` | Returns all 28 permission links |
+| 8 | `Permissions` | `WHERE Id IN (...)` via RolePermissions | Returns 28 permission codes (WORKORDER_CREATE, USER_VIEW, etc.) |
+| 9 | `UserSessions` | `INSERT` | Creates session: UserId, RefreshToken, DeviceInfo, ExpiresAt, IsRevoked=false |
+
+**Output → JWT token containing:**
+```
+sub       = {adminId}
+tenant_id = ABC
+roles     = ["Admin"]
+permissions = ["WORKORDER_CREATE", "WORKORDER_VIEW", ..., "TENANT_MANAGE"]  (all 28)
+jti       = {unique-session-token-id}
+```
+
+**Failed login path:** If password is wrong → `AccessFailedCount++`. At 5 failures → `IsLocked = true`, `LockoutEnd = now + 15min`. Subsequent attempts rejected until lockout expires.
+
+---
+
+### Step 2 — Sidebar Menu Loading (`GET /api/v1/menus/my-menus`)
+
+**Tables queried by `MenuService.GetMyMenusAsync()`:**
+
+| # | Table | Query | Purpose |
+|---|-------|-------|---------|
+| 1 | `Users` → `UserRoles` → `RolePermissions` → `Permissions` | Chain via Includes | Get admin's distinct permission codes |
+| 2 | `FeatureFlags` | `SELECT Code, IsEnabled` | Global flag defaults |
+| 3 | `TenantFeatureFlags` | `WHERE TenantId = {abcId}` | Tenant-specific overrides |
+| 4 | `Modules` | `WHERE IsActive = 1 ORDER BY DisplayOrder` | Load all active modules |
+| 5 | `Menus` | `WHERE IsVisible = 1` (per module) | Load visible menus with hierarchy |
+| 6 | `MenuPermissions` → `Permissions` | Per menu | Check required permissions |
+
+**Filtering logic (per menu):**
+```
+For each menu:
+  1. If menu.FeatureFlag is set:
+     → Check TenantFeatureFlags first (tenant override)
+     → Fall back to FeatureFlags.IsEnabled (global default)
+     → If flag disabled → HIDE menu
+  2. If menu has MenuPermissions where IsRequired = true:
+     → User must have ALL required permission codes
+     → Admin has all 28 → always passes
+  3. Menu passes both checks → SHOW
+```
+
+**Result for admin (has all permissions):**
+```
+Production (Module)
+  ├── Work Orders (Menu, parent)
+  │     ├── List Work Orders (child menu)
+  │     ├── Create Work Order (child menu)
+  │     └── Approvals (child menu)
+  └── Job Cards (Menu, parent)
+        ├── List Job Cards (child menu)
+        └── Create Job Card (child menu)
+Admin (Module)
+  ├── Users (Menu)
+  ├── Roles (Menu)
+  └── Tenants (Menu)
+```
+
+**Comparison — Production Operator (only has WORKORDER_*, JOBCARD_*, PRODUCTION_* permissions):**
+- Sees: Production module → Work Orders, Job Cards (and their children)
+- Hidden: Admin module → Users, Roles, Tenants (requires USER_VIEW, ROLE_VIEW, TENANT_VIEW)
+
+---
+
+### Step 3 — Business Request (`GET /api/v1/work-orders`)
+
+**Request headers:**
+```
+Authorization: Bearer {jwt}
+X-Tenant-Id: ABC
+```
+
+**Pipeline (table access in order):**
+
+| # | Component | Table | Purpose |
+|---|-----------|-------|---------|
+| 1 | JWT Middleware | — (no DB hit) | Validates JWT signature, extracts claims (userId, permissions, roles) |
+| 2 | `[Authorize]` | — (no DB hit) | Checks claims match required roles/permissions on endpoint |
+| 3 | `TenantMiddleware` | `Tenants` (Master DB, cached) | Looks up `ABC` → gets ConnectionString + DbProvider |
+| 4 | `TenantDbContextFactory` | — | Creates `AppDbContext` pointing to `ERP_ABC` database |
+| 5 | `PlantAuthorizationBehavior` | `UserPlantAccess` (Tenant DB) | If command implements `IPlantScopedRequest`, checks user has access to the target plant |
+| 6 | Handler | `WorkOrders` (Tenant DB) | Queries work orders from `ERP_ABC` |
+| 7 | `AuditLogInterceptor` | `AuditLogs` (Tenant DB) | On write operations: captures old/new JSON, UserId, IP, UserAgent |
+
+**Key insight — two databases in one request:**
+- Steps 1–3 use **Master DB** (ERP_Master) for auth + tenant lookup
+- Steps 5–7 use **Tenant DB** (ERP_ABC) for business data
+
+---
+
+### Step 4 — Permission Tree (`GET /api/v1/menus/permission-tree`)
+
+> Used by the Roles page to show which permissions to assign.
+
+**Tables queried by `MenuService.GetPermissionTreeAsync()`:**
+
+| # | Table | Query | Purpose |
+|---|-------|-------|---------|
+| 1 | `Modules` → `Menus` → `MenuPermissions` → `Permissions` | Chain via Includes | Build Module → Menu → Permission hierarchy |
+| 2 | `Permissions` | `SELECT * ORDER BY Category, Code` | Get ALL permissions (some may not be linked to any menu) |
+
+**Tree output:**
+```
+Production (Module)
+  ├── Work Orders (Menu)
+  │     ├── Create Work Order (WORKORDER_CREATE)     ← leaf, has permissionId
+  │     ├── View Work Orders (WORKORDER_VIEW)        ← leaf, has permissionId
+  │     ├── Update Work Order (WORKORDER_UPDATE)
+  │     └── Delete Work Order (WORKORDER_DELETE)
+  ├── Job Cards (Menu)
+  │     ├── Create Job Card (JOBCARD_CREATE)
+  │     ├── View Job Cards (JOBCARD_VIEW)
+  │     └── ...
+  └── ...
+Admin (Module)
+  ├── Users (Menu)
+  │     ├── Create User (USER_CREATE)
+  │     └── ...
+  └── ...
+Other (virtual node — unlinked permissions)
+  └── Any permission not linked to a menu via MenuPermissions
+```
+
+**Deduplication rule:** If the same permission (e.g., `WORKORDER_VIEW`) is linked to multiple menus via `MenuPermissions`, it only appears under the first menu encountered. This prevents confusing toggle behavior in the UI (unchecking one copy would uncheck all).
+
+---
+
+### Step 5 — Role Comparison
+
+How different roles see the same system:
+
+| Aspect | Admin | Production Operator | QA Inspector | Viewer |
+|--------|-------|-------------------|--------------|--------|
+| **Permissions** | All 28 | 13 (WORKORDER_*, JOBCARD_*, PRODUCTION_*) | 11 (QA_*, all *_VIEW) | 7 (*_VIEW only) |
+| **Sidebar menus** | Production + Admin modules | Production module only | Production + QA menus | Production (read-only routes) |
+| **Can create WO?** | ✅ WORKORDER_CREATE | ✅ WORKORDER_CREATE | ❌ | ❌ |
+| **Can manage users?** | ✅ USER_CREATE/UPDATE/DELETE | ❌ | ❌ | ❌ |
+| **Can approve QA?** | ✅ QA_APPROVE | ❌ | ✅ QA_APPROVE | ❌ |
+| **IsSystemRole** | ✅ (cannot delete) | ✅ | ✅ | ✅ |
+| **TenantId** | NULL (system-wide) | NULL (system-wide) | NULL (system-wide) | NULL (system-wide) |
+
+**System roles** (`IsSystemRole = true`) are seeded on startup and cannot be deleted via the API. Custom roles can be created per tenant with `TenantId` set to scope them.
+
+---
+
+### Step 6 — Multi-Tenant User Assignment
+
+A single user can be assigned to multiple tenants via `UserTenants`:
+
+```
+Users table:
+  admin (Id: aaa-111)
+
+UserTenants table:
+  ┌──────────────────────────────────────────────────────────┐
+  │ UserId    │ TenantId   │ IsDefault │ JoinedAt            │
+  │ aaa-111   │ tenant-ABC │ true      │ 2026-01-01 00:00:00 │
+  │ aaa-111   │ tenant-XYZ │ false     │ 2026-03-15 10:00:00 │
+  └──────────────────────────────────────────────────────────┘
+
+UserRoles table (tenant-scoped):
+  ┌──────────────────────────────────────────────────────┐
+  │ UserId    │ RoleId         │ TenantId                │
+  │ aaa-111   │ role-admin     │ NULL (system role)      │
+  └──────────────────────────────────────────────────────┘
+```
+
+**Login with `tenantCode: "ABC"`:**
+- JWT `tenant_id` = ABC
+- All API requests use `X-Tenant-Id: ABC` → routes to `ERP_ABC` database
+- Permissions extracted from roles where `TenantId IS NULL` (system) OR `TenantId = {abcId}`
+
+**Switch to tenant XYZ:** User logs in again with `tenantCode: "XYZ"` → new JWT, new session, routes to `ERP_XYZ` database. Same user, completely isolated data.
+
+---
+
+### Complete Table Access Map
+
+Summary of which tables each major operation touches:
+
+| Operation | Master DB Tables | Tenant DB Tables |
+|-----------|-----------------|------------------|
+| **Login** | Users, Tenants, UserTenants, UserRoles, Roles, RolePermissions, Permissions, UserSessions | — |
+| **Refresh token** | UserSessions, Users (SecurityStamp check) | — |
+| **Load sidebar** | Users→UserRoles→RolePermissions→Permissions, Modules, Menus, MenuPermissions, FeatureFlags, TenantFeatureFlags | — |
+| **Permission tree** | Modules, Menus, MenuPermissions, Permissions | — |
+| **List users** | Users, UserRoles, Roles | — |
+| **Assign tenants** | Users, Tenants, UserTenants | — |
+| **Assign permissions** | Roles, RolePermissions, Permissions | — |
+| **Create work order** | Tenants (via middleware, cached) | WorkOrders, UserPlantAccess, AuditLogs |
+| **View job cards** | Tenants (via middleware, cached) | JobCards, WorkOrders |
+| **Change password** | Users, UserPasswordHistory (last 5 check), UserSessions (revoke all) | — |
+| **Lockout** | Users (AccessFailedCount, IsLocked, LockoutEnd) | — |

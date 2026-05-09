@@ -14,4 +14,6 @@ public interface IUserService
     Task<Result<UserDto>> UpdateAsync(Guid id, UpdateUserRequest request);
     Task<Result> DeleteAsync(Guid id);
     Task<Result> AssignRolesAsync(Guid userId, AssignRolesRequest request);
+    Task<Result<IReadOnlyList<UserTenantDto>>> GetUserTenantsAsync(Guid userId);
+    Task<Result> AssignTenantsAsync(Guid userId, AssignTenantsRequest request);
 }

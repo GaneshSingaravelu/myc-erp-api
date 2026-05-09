@@ -22,3 +22,16 @@ public record MenuItemResponse(
     int DisplayOrder,
     bool IsEnabled,
     List<MenuItemResponse> Children);
+
+// ── Permission Tree (for role-permission assignment UI) ──
+
+/// <summary>
+/// Hierarchical tree node: Module → Menu → Permissions.
+/// Used by the admin UI to render a tree-style permission selector
+/// matching the sidebar menu structure.
+/// </summary>
+public record PermissionTreeNode(
+    string Id,
+    string Label,
+    string? PermissionId,
+    List<PermissionTreeNode> Children);

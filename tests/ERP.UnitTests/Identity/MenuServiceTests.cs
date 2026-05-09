@@ -21,7 +21,7 @@ public class MenuServiceTests : IdentityServiceTestBase
 
     public MenuServiceTests()
     {
-        _sut = new MenuService(Users, Menus, FeatureFlags);
+        _sut = new MenuService(Users, Menus, Permissions, FeatureFlags);
     }
 
     // ── Test fixture builders ──

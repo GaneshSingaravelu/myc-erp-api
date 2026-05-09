@@ -16,7 +16,7 @@ public class UserServiceTests : IdentityServiceTestBase
 
     public UserServiceTests()
     {
-        _sut = new UserService(Users, Roles, UnitOfWork);
+        _sut = new UserService(Users, Roles, Tenants, UnitOfWork);
     }
 
     // ── GetByIdAsync ──
@@ -204,5 +204,119 @@ public class UserServiceTests : IdentityServiceTestBase
         Assert.Contains(newRole1.Id, assigned);
         Assert.Contains(newRole2.Id, assigned);
         Assert.DoesNotContain(oldRole.Id, assigned);
+    }
+
+    // ── GetUserTenantsAsync ──
+
+    [Fact]
+    public async Task GetUserTenants_WhenUserNotFound_ReturnsNotFound()
+    {
+        var result = await _sut.GetUserTenantsAsync(Guid.NewGuid());
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("User.NotFound", result.Error.Code);
+    }
+
+    [Fact]
+    public async Task GetUserTenants_ReturnsActiveTenantAssignments()
+    {
+        var user = await PersistAsync(CreateTestUser("alice"));
+        var tenant1 = await PersistAsync(CreateTestTenant("ABC"));
+        var tenant2 = await PersistAsync(CreateTestTenant("XYZ"));
+
+        await PersistAsync(new UserTenant
+        {
+            UserId = user.Id, TenantId = tenant1.Id,
+            IsDefault = true, IsActive = true, JoinedAt = DateTime.UtcNow
+        });
+        await PersistAsync(new UserTenant
+        {
+            UserId = user.Id, TenantId = tenant2.Id,
+            IsDefault = false, IsActive = false, JoinedAt = DateTime.UtcNow // inactive
+        });
+
+        var result = await _sut.GetUserTenantsAsync(user.Id);
+
+        Assert.True(result.IsSuccess);
+        Assert.Single(result.Value);
+        Assert.Equal("ABC", result.Value[0].TenantCode);
+        Assert.True(result.Value[0].IsDefault);
+    }
+
+    // ── AssignTenantsAsync ──
+
+    [Fact]
+    public async Task AssignTenants_WhenUserNotFound_ReturnsNotFound()
+    {
+        var tenant = await PersistAsync(CreateTestTenant("ABC"));
+        var request = new AssignTenantsRequest(new[] { tenant.Id });
+
+        var result = await _sut.AssignTenantsAsync(Guid.NewGuid(), request);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("User.NotFound", result.Error.Code);
+    }
+
+    [Fact]
+    public async Task AssignTenants_WhenAnyTenantMissing_ReturnsNotFound()
+    {
+        var user = await PersistAsync(CreateTestUser("alice"));
+        var tenant = await PersistAsync(CreateTestTenant("ABC"));
+        var request = new AssignTenantsRequest(new[] { tenant.Id, Guid.NewGuid() });
+
+        var result = await _sut.AssignTenantsAsync(user.Id, request);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Tenant.NotFound", result.Error.Code);
+    }
+
+    [Fact]
+    public async Task AssignTenants_ReplacesExistingAssignments()
+    {
+        var user = await PersistAsync(CreateTestUser("alice"));
+        var oldTenant = await PersistAsync(CreateTestTenant("OLD"));
+        var newTenant1 = await PersistAsync(CreateTestTenant("NEW1"));
+        var newTenant2 = await PersistAsync(CreateTestTenant("NEW2"));
+
+        await PersistAsync(new UserTenant
+        {
+            UserId = user.Id, TenantId = oldTenant.Id,
+            IsDefault = true, IsActive = true, JoinedAt = DateTime.UtcNow
+        });
+
+        var request = new AssignTenantsRequest(new[] { newTenant1.Id, newTenant2.Id });
+        var result = await _sut.AssignTenantsAsync(user.Id, request);
+
+        Assert.True(result.IsSuccess);
+        var assigned = await Context.Set<UserTenant>()
+            .Where(ut => ut.UserId == user.Id)
+            .ToListAsync();
+
+        Assert.Equal(2, assigned.Count);
+        Assert.Contains(assigned, ut => ut.TenantId == newTenant1.Id && ut.IsDefault);
+        Assert.Contains(assigned, ut => ut.TenantId == newTenant2.Id && !ut.IsDefault);
+        Assert.DoesNotContain(assigned, ut => ut.TenantId == oldTenant.Id);
+    }
+
+    [Fact]
+    public async Task AssignTenants_WithEmptyList_ClearsAllAssignments()
+    {
+        var user = await PersistAsync(CreateTestUser("alice"));
+        var tenant = await PersistAsync(CreateTestTenant("ABC"));
+
+        await PersistAsync(new UserTenant
+        {
+            UserId = user.Id, TenantId = tenant.Id,
+            IsDefault = true, IsActive = true, JoinedAt = DateTime.UtcNow
+        });
+
+        var request = new AssignTenantsRequest(new List<Guid>());
+        var result = await _sut.AssignTenantsAsync(user.Id, request);
+
+        Assert.True(result.IsSuccess);
+        var remaining = await Context.Set<UserTenant>()
+            .Where(ut => ut.UserId == user.Id)
+            .ToListAsync();
+        Assert.Empty(remaining);
     }
 }

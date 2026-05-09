@@ -67,4 +67,20 @@ public class UsersController : ControllerBase
         var result = await _userService.AssignRolesAsync(id, request);
         return result.IsSuccess ? NoContent() : BadRequest(new { error = result.Error.Message });
     }
+
+    [HttpGet("{id:guid}/tenants")]
+    [Authorize(Roles = "Admin")]
+    public async Task<IActionResult> GetUserTenants(Guid id)
+    {
+        var result = await _userService.GetUserTenantsAsync(id);
+        return result.IsSuccess ? Ok(result.Value) : NotFound(new { error = result.Error.Message });
+    }
+
+    [HttpPut("{id:guid}/tenants")]
+    [Authorize(Roles = "Admin")]
+    public async Task<IActionResult> AssignTenants(Guid id, [FromBody] AssignTenantsRequest request)
+    {
+        var result = await _userService.AssignTenantsAsync(id, request);
+        return result.IsSuccess ? NoContent() : BadRequest(new { error = result.Error.Message });
+    }
 }

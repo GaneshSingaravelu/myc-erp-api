@@ -26,15 +26,18 @@ public class MenuService : IMenuService
 {
     private readonly IUserRepository _users;
     private readonly IMenuRepository _menus;
+    private readonly IPermissionRepository _permissions;
     private readonly IFeatureFlagRepository _featureFlags;
 
     public MenuService(
         IUserRepository users,
         IMenuRepository menus,
+        IPermissionRepository permissions,
         IFeatureFlagRepository featureFlags)
     {
         _users = users;
         _menus = menus;
+        _permissions = permissions;
         _featureFlags = featureFlags;
     }
 
@@ -73,6 +76,98 @@ public class MenuService : IMenuService
         }
 
         return Result.Success<IReadOnlyList<ModuleMenuResponse>>(result);
+    }
+
+    public async Task<Result<IReadOnlyList<PermissionTreeNode>>> GetPermissionTreeAsync()
+    {
+        // Step 1: Load all modules + menus + their MenuPermissions → Permission
+        var modules = await _menus.GetActiveModulesWithVisibleMenusAsync();
+
+        // Step 2: Load ALL permissions (some may not be linked to any menu)
+        var allPermissions = await _permissions.GetAllOrderedAsync();
+        var linkedPermissionIds = new HashSet<Guid>();
+
+        // Step 3: Build tree: Module → Menu → Permissions
+        var tree = new List<PermissionTreeNode>();
+
+        foreach (var module in modules)
+        {
+            var menuNodes = BuildMenuPermissionNodes(module.Menus.ToList(), null, linkedPermissionIds);
+            if (menuNodes.Count > 0)
+            {
+                tree.Add(new PermissionTreeNode(
+                    Id: $"module_{module.Id}",
+                    Label: module.Name,
+                    PermissionId: null,
+                    Children: menuNodes));
+            }
+        }
+
+        // Step 4: Collect unlinked permissions under "Other" node
+        var unlinked = allPermissions
+            .Where(p => !linkedPermissionIds.Contains(p.Id))
+            .Select(p => new PermissionTreeNode(
+                Id: $"perm_{p.Id}",
+                Label: $"{p.Name} ({p.Code})",
+                PermissionId: p.Id.ToString(),
+                Children: new List<PermissionTreeNode>()))
+            .ToList();
+
+        if (unlinked.Count > 0)
+        {
+            tree.Add(new PermissionTreeNode(
+                Id: "module_other",
+                Label: "Other",
+                PermissionId: null,
+                Children: unlinked));
+        }
+
+        return Result.Success<IReadOnlyList<PermissionTreeNode>>(tree);
+    }
+
+    private static List<PermissionTreeNode> BuildMenuPermissionNodes(
+        List<Menu> allMenus,
+        Guid? parentId,
+        HashSet<Guid> linkedPermissionIds)
+    {
+        var nodes = new List<PermissionTreeNode>();
+
+        var children = allMenus
+            .Where(m => m.ParentMenuId == parentId)
+            .OrderBy(m => m.DisplayOrder)
+            .ToList();
+
+        foreach (var menu in children)
+        {
+            // Recurse into child menus
+            var childNodes = BuildMenuPermissionNodes(allMenus, menu.Id, linkedPermissionIds);
+
+            // Add this menu's own permissions as leaf nodes (skip duplicates —
+            // the same permission can be linked to multiple menus via MenuPermission;
+            // showing it once avoids confusing toggle behavior in the UI)
+            foreach (var mp in menu.MenuPermissions.OrderBy(mp => mp.Permission.Code))
+            {
+                if (linkedPermissionIds.Add(mp.Permission.Id)) // returns false if already present
+                {
+                    childNodes.Add(new PermissionTreeNode(
+                        Id: $"perm_{mp.Permission.Id}",
+                        Label: $"{mp.Permission.Name} ({mp.Permission.Code})",
+                        PermissionId: mp.Permission.Id.ToString(),
+                        Children: new List<PermissionTreeNode>()));
+                }
+            }
+
+            if (childNodes.Count > 0)
+            {
+                nodes.Add(new PermissionTreeNode(
+                    Id: $"menu_{menu.Id}",
+                    Label: menu.Name,
+                    PermissionId: null,
+                    Children: childNodes));
+            }
+        }
+
+        return nodes;
     }
 
     /// <summary>

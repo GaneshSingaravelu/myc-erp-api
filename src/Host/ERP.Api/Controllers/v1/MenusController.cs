@@ -51,4 +51,17 @@ public class MenusController : ControllerBase
         var result = await _menuService.GetMyMenusAsync(userId, tenantId);
         return result.IsSuccess ? Ok(result.Value) : BadRequest(result.Error);
     }
+
+    /// <summary>
+    /// GET /api/v1/menus/permission-tree
+    /// Returns all permissions structured as Module → Menu → Permissions tree.
+    /// Used by the admin role-permission assignment UI.
+    /// </summary>
+    [HttpGet("permission-tree")]
+    [Authorize(Roles = "Admin")]
+    public async Task<IActionResult> GetPermissionTree()
+    {
+        var result = await _menuService.GetPermissionTreeAsync();
+        return result.IsSuccess ? Ok(result.Value) : BadRequest(result.Error);
+    }
 }

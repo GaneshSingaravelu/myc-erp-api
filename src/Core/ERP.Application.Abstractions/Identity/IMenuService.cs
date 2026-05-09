@@ -13,4 +13,11 @@ public interface IMenuService
     /// Filters by: user permissions + tenant feature flags.
     /// </summary>
     Task<Result<IReadOnlyList<ModuleMenuResponse>>> GetMyMenusAsync(Guid userId, Guid? tenantId);
+
+    /// <summary>
+    /// Get all permissions structured as a tree matching the sidebar menu hierarchy.
+    /// Module → Menu → Permissions. Permissions not linked to any menu are grouped
+    /// under an "Other" root node. Used by the admin permission-assignment UI.
+    /// </summary>
+    Task<Result<IReadOnlyList<PermissionTreeNode>>> GetPermissionTreeAsync();
 }

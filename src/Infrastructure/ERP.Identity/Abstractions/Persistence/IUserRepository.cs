@@ -85,4 +85,24 @@ public interface IUserRepository
     /// where the service loads an AppUser, clears their current roles, and adds new ones.
     /// </summary>
     void RemoveUserRoles(IEnumerable<AppUserRole> userRoles);
+
+    // ── Tenant assignment ──────────────────────────────────────────────
+
+    /// <summary>
+    /// Get all active tenant assignments for a user, including the Tenant navigation
+    /// (TenantCode, TenantName needed for the DTO projection).
+    /// </summary>
+    Task<IReadOnlyList<UserTenant>> GetUserTenantsAsync(Guid userId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Get all UserTenant rows for a user (including inactive) — used by the
+    /// replace-tenants flow to clear existing assignments before adding new ones.
+    /// </summary>
+    Task<IReadOnlyList<UserTenant>> GetUserTenantRowsAsync(Guid userId, CancellationToken cancellationToken = default);
+
+    /// <summary>Stage a new UserTenant row for insertion.</summary>
+    Task AddUserTenantAsync(UserTenant userTenant, CancellationToken cancellationToken = default);
+
+    /// <summary>Stage a batch of UserTenant join rows for removal.</summary>
+    void RemoveUserTenants(IEnumerable<UserTenant> userTenants);
 }
