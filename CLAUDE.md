@@ -214,6 +214,9 @@ dotnet test ERP.slnx
 | `@module-federation/enhanced` | MIT | ✅ |
 | `@testing-library/*`, `jest-preset-angular` | MIT | ✅ Test tools only |
 | `@nx/*` | MIT | ✅ |
+| `exceljs` | MIT | ✅ Grid export to .xlsx |
+| `pdfmake` | MIT | ✅ Grid export to PDF (declarative table API) |
+| `file-saver` | MIT | ✅ Trigger browser file downloads |
 
 **Grid library — status: pending decision**
 
@@ -238,6 +241,7 @@ dotnet test ERP.slnx
 | `NetArchTest.Rules` | MIT | ✅ Test tool only |
 | `xunit`, `Moq`, `coverlet.collector` | Apache 2.0 / BSD-3 / MIT | ✅ Test tools only |
 | `Mediator.SourceGenerator` + `Mediator.Abstractions` | MIT | ✅ **Active replacement for MediatR** — v3.0.2, source-generated, same IRequest/IRequestHandler API, handlers return ValueTask, behaviors use MessageHandlerDelegate |
+| `MailKit` + `MimeKit` | MIT | ✅ SMTP email sending with attachments. jstedfast/MailKit. Replaces System.Net.Mail (obsolete). |
 
 ### Rejected / Conditional Libraries
 
@@ -280,7 +284,18 @@ If `ngx-cerious-widgets` fails Angular 20 compatibility test:
 - [x] **Phase 2 UI Polish:** Sidebar brand/footer alignment (host height chain), collapsed section icons with primary color + CSS tooltip, full-height flyout (host + `.myc-flyout { height: 100% }`), real user data in header profile dropdown (AuthStore computed signals), `NavSection.icon` propagated via MenuStore, convergence-based IdentitySeeder (INSERT/UPDATE/SOFT-DELETE/RE-ACTIVATE by Code — idempotent, runs every boot).
 - [x] **License Policy Checkpoint:** Full audit completed 2026-05-05. All Angular deps clean (MIT/Apache). MediatR identified as RPL 1.5 (viral copyleft — must replace). Replacement: `Mediator` by martinothamar (MIT). Policy documented in "Third-Party Library License Policy" section.
 - [x] **MediatR Migration:** Replaced `MediatR` (RPL-1.5) + `MediatR.Contracts` with `Mediator.SourceGenerator` + `Mediator.Abstractions` v3.0.2 (MIT). All 20 handlers migrated (Task→ValueTask), 3 behaviors updated (MessageHandlerDelegate), DomainEventDispatcherInterceptor (IPublisher→IMediator), Program.cs (AddMediatR→AddMediator). Build: 0 errors. Tests: 111/111 + 13/13 ✅
-- [ ] **Phase 2.9 — Admin Foundations** (must complete before Phase 3): Grid component (`ngx-cerious-widgets` wrapper OR Angular CDK fallback, server-side pagination, column config), User Management (Create/Edit with Signal Forms, Activate/Deactivate, Role assignment), Forgot Password flow (email → reset link/OTP → secure reset), Roles & Permissions UI (RBAC table explorer)
+- [x] **Phase 2.9 — Admin Foundations:**
+  - [x] **2.9A — Shared UI Components:** Modal/Dialog (`libs/ui/src/lib/modal/`), ConfirmDialog, CheckboxDropdown (`libs/ui/src/lib/checkbox-dropdown/`), ToastService + ToastContainer (`libs/ui/src/lib/toast/`). All standalone, OnPush, BEM, design tokens.
+  - [x] **2.9B — User Management:** UsersPage + RolesPage refactored to use shared Modal, ConfirmDialog, CheckboxDropdown, ToastService. Delete uses ConfirmDialog instead of `window.confirm`. Toast notifications on all CRUD operations.
+  - [x] **2.9C — Email Service + Forgot/Reset Password:** `IEmailService` abstraction in `ERP.Application.Abstractions.Email`, `SmtpEmailService` (MailKit) in `ERP.Infrastructure.Email`, `EmailSettings` config. `ForgotPasswordAsync` sends email in production, returns token in dev. Angular pages already existed (ForgotPasswordComponent, ResetPasswordComponent).
+  - [x] **2.9D — Grid Export:** `GridExportService` in `libs/ui/src/lib/grid-export/` — ExcelJS (.xlsx), CSV (built-in), pdfmake (PDF). Grid component gets `[exportable]` and `[exportFileName]` inputs. Export buttons appear in grid footer.
+- [~] **Phase 2.9E — UI Polish & Admin Completion:**
+  - [ ] **2.9E-0 — Nx Serve Warnings:** Fix 3 warnings: (1) update `baseline-browser-mapping`, (2) update `caniuse-lite` / Browserslist DB, (3) set `tsconfig.json` target to ES2022 to suppress Angular CLI warning.
+  - [x] **2.9E-1 — UI Alignment & Spacing:** Modal button order (primary action first, Cancel last, right-aligned with gap). `[modal-footer]` flex styles in consumer components. Tab spacing `margin-bottom: 1.25rem`. Files: `users-page.ts`, `roles-page.ts`, `confirm-dialog.ts`.
+  - [x] **2.9E-2 — Tenant Mapping for Users:** API: `IUserRepository.GetUserTenantsAsync/AddUserTenantAsync/RemoveUserTenants`, `UserService.GetUserTenantsAsync/AssignTenantsAsync`, `UsersController GET/PUT /users/{id}/tenants`. Angular: `TenantApiService`, "Tenants" tab with CheckboxDropdown in users-page modal. 5 new unit tests. Tests: 117/117 + 13/13 ✅
+  - [x] **2.9E-3 — Permissions Tree UI:** API: `MenuService.GetPermissionTreeAsync()` returns Module → Menu → Permissions tree, `MenusController GET /menus/permission-tree`. Angular: `TreeCheckbox` component (`libs/ui/src/lib/tree-checkbox/`) with expand/collapse, parent toggle, indeterminate state. `roles-page.ts` refactored to use TreeCheckbox + `MenuApiService.getPermissionTree()` instead of flat category list.
+  - [x] **2.9E-4 — Tenant Management Screen:** `tenants-page.ts` in `libs/feature/user-management/`. Grid: Name, Code, DB Provider, Status, Users, Created. Modal: create (Code/Name/Provider/ConnectionString) and edit (Name/Active). Actions: Edit, Migrate DB, Deactivate. Route wired in `user-management.routes.ts`. `TenantApiService` full CRUD + migrate.
+  - [x] **2.9E-5 — Login Redirect Bug:** `isStoredTokenValid()` in AuthStore decodes JWT + checks `exp` with 30s clock-skew. `LoginComponent.submit()` resets `hasNavigated = false`. Removed debug console.log.
 - [ ] Phase 3 Preparation: Sample seed users (Operator, Inspector, Viewer with multi-tenant assignments) + Tenant dropdown UX
 - [ ] Phase 3: SignalR integration (job card status broadcasts, QA alerts, tenant-scoped hub groups)
 - [ ] Phase 4: Reporting (open-source, Angular-compatible)
@@ -378,7 +393,19 @@ All four items below shipped:
 
 **Graphify (HotChocolate + Apollo Angular)** — deferred; not started yet.
 
-**Phase 3 Prep (start here next):**
+**Phase 2.9A–D — COMPLETED.** Shared UI components, User/Role management, Email service, Grid export all shipped.
+
+**Phase 2.9E — UI Polish & Admin Completion — MOSTLY COMPLETE:**
+- 2.9E-1 through 2.9E-5: ✅ All done
+- 2.9E-0 (Nx Serve Warnings): ⏳ Deferred to last — update `baseline-browser-mapping`, `caniuse-lite`, tsconfig target ES2022
+
+**Bug fix (2026-05-09):** `AuditLog` entity was accidentally included in `MasterDbContext` model via assembly scanning (`AuditLogConfiguration` lives in `ERP.Persistence`, same assembly `MasterDbContext` scans). Fixed by adding predicate filter to `ApplyConfigurationsFromAssembly`. Migration regenerated — `AuditLogs` table no longer created in Master DB.
+
+**Docs (2026-05-09):** Added "Concrete Example: Admin User Flow" section to `docs/DATABASE_ARCHITECTURE.md` — traces admin user through all tables for login, sidebar, business requests, permission tree, role comparison, and multi-tenant assignment.
+
+**Start here next: 2.9E-0 (Nx Serve Warnings), then Phase 3 Prep.**
+
+**Phase 3 Prep (after 2.9E-0):**
 - Sample seed users (Operator/Inspector/Viewer multi-tenant) — already partially done (sample users in IdentitySeeder for Dev), needs multi-tenant cross-assignment
 - Tenant dropdown UX — public list-tenants endpoint → Angular tenant selector at login
 - Phase 3: SignalR (job card status broadcasts, QA alerts, tenant-scoped hub groups)
@@ -395,14 +422,14 @@ All four items below shipped:
 - `BaseEntity.Id` uses `init` accessor — settable in object initializers, immutable after construction
 - Identity seeder runs on startup — creates default admin (admin/Admin@123), 4 roles, 28 permissions
 - Workflow engine is table-based (no Elsa) — clients modify flow via CRUD on ProcessTemplate/ProcessStep
-- `AuditLog` entity lives in `ERP.SharedKernel.Entities` (not Production.Domain). Its EF config is in `ERP.Persistence/Configurations/AuditLogConfiguration.cs`. `AuditLogInterceptor` populates it — wired in `TenantDbContextFactory` only (not MasterDbContext, since AuditLogs are tenant-DB only).
+- `AuditLog` entity lives in `ERP.SharedKernel.Entities` (not Production.Domain). Its EF config is in `ERP.Persistence/Configurations/AuditLogConfiguration.cs`. `AuditLogInterceptor` populates it — wired in `TenantDbContextFactory` only (not MasterDbContext, since AuditLogs are tenant-DB only). `MasterDbContext.OnModelCreating` explicitly excludes `AuditLogConfiguration` via predicate filter on `ApplyConfigurationsFromAssembly` to prevent the tenant-only table from appearing in Master DB migrations.
 - Pipeline behavior execution order: `ValidationBehavior` → `PlantAuthorizationBehavior` → `LoggingBehavior` → Handler. Plant auth only fires for commands implementing `IPlantScopedRequest` (in `ERP.Application.Abstractions.CQRS`).
 - `ICurrentUserService` now exposes `IpAddress` and `UserAgent` (added for `AuditLogInterceptor`).
 - **AppDbContext migrations must use `tools/ERP.DbMigrator` as the startup project** — `ERP.Api` fails at design time because `HttpContext` is unavailable. Command: `dotnet ef migrations add <Name> --context AppDbContext --project src/Infrastructure/ERP.Persistence.SqlServer --startup-project tools/ERP.DbMigrator --output-dir Migrations/AppDb`
 
 ## CI/CD Status
 
-- **API (.NET 10):** GitHub Actions workflow — `dotnet build ERP.slnx` → `dotnet test ERP.slnx`. NuGet cache enabled. Permissions `contents: read`. Currently green: 111/111 unit tests + 13/13 architecture guards.
+- **API (.NET 10):** GitHub Actions workflow — `dotnet build ERP.slnx` → `dotnet test ERP.slnx`. NuGet cache enabled. Permissions `contents: read`. Currently green: 117/117 unit tests + 13/13 architecture guards.
 - **UI (Angular):** GitHub Actions workflow — `npm ci` → `npx nx run-many --target lint --all` → `npx nx run-many --target test --all`. npm cache enabled.
 - **`.gitattributes`** enforces LF line endings repo-wide (eliminates CRLF noise on Windows contributors).
 - **Recommended next:** Branch protection on `main` requiring CI green + 1 review.

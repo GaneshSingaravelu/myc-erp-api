@@ -36,8 +36,12 @@ public class MasterDbContext : DbContext
     {
         base.OnModelCreating(modelBuilder);
 
-        // Apply configurations from this assembly (base configurations)
-        modelBuilder.ApplyConfigurationsFromAssembly(typeof(MasterDbContext).Assembly);
+        // Apply configurations from this assembly (base configurations).
+        // Exclude AuditLogConfiguration — AuditLog is a tenant-DB-only entity
+        // (populated by AuditLogInterceptor wired in TenantDbContextFactory).
+        modelBuilder.ApplyConfigurationsFromAssembly(
+            typeof(MasterDbContext).Assembly,
+            type => type != typeof(Configurations.AuditLogConfiguration));
 
         // Apply configurations from registered assemblies (Identity entities, etc.)
         foreach (var assembly in ConfigurationAssemblies)

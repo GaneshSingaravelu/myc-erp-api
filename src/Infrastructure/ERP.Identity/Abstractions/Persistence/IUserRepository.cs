@@ -68,6 +68,9 @@ public interface IUserRepository
     /// <summary>Check whether any user already uses this normalized email.</summary>
     Task<bool> ExistsByNormalizedEmailAsync(string normalizedEmail, CancellationToken cancellationToken = default);
 
+    /// <summary>Find user by normalized (uppercased) email (no related entities loaded). Used for password reset flows.</summary>
+    Task<AppUser?> GetByNormalizedEmailAsync(string normalizedEmail, CancellationToken cancellationToken = default);
+
     /// <summary>Stage a new user for insertion. Persisted on next IMasterUnitOfWork.SaveChangesAsync().</summary>
     Task AddAsync(AppUser user, CancellationToken cancellationToken = default);
 
@@ -82,4 +85,24 @@ public interface IUserRepository
     /// where the service loads an AppUser, clears their current roles, and adds new ones.
     /// </summary>
     void RemoveUserRoles(IEnumerable<AppUserRole> userRoles);
+
+    // ── Tenant assignment ──────────────────────────────────────────────
+
+    /// <summary>
+    /// Get all active tenant assignments for a user, including the Tenant navigation
+    /// (TenantCode, TenantName needed for the DTO projection).
+    /// </summary>
+    Task<IReadOnlyList<UserTenant>> GetUserTenantsAsync(Guid userId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Get all UserTenant rows for a user (including inactive) — used by the
+    /// replace-tenants flow to clear existing assignments before adding new ones.
+    /// </summary>
+    Task<IReadOnlyList<UserTenant>> GetUserTenantRowsAsync(Guid userId, CancellationToken cancellationToken = default);
+
+    /// <summary>Stage a new UserTenant row for insertion.</summary>
+    Task AddUserTenantAsync(UserTenant userTenant, CancellationToken cancellationToken = default);
+
+    /// <summary>Stage a batch of UserTenant join rows for removal.</summary>
+    void RemoveUserTenants(IEnumerable<UserTenant> userTenants);
 }

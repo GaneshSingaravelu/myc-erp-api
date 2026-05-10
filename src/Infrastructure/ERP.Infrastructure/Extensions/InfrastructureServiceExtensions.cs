@@ -1,7 +1,9 @@
 using ERP.Application.Abstractions.Caching;
+using ERP.Application.Abstractions.Email;
 using ERP.Application.Abstractions.Identity;
 using ERP.Application.Abstractions.MultiTenancy;
 using ERP.Infrastructure.Caching;
+using ERP.Infrastructure.Email;
 using ERP.Infrastructure.Tenant;
 using ERP.Persistence.Context;
 using ERP.Persistence.Interceptors;
@@ -105,7 +107,14 @@ public static class InfrastructureServiceExtensions
         services.AddDbContext<MasterDbContext>((sp, options) =>
         {
             options.UseSqlServer(masterConnectionString, sqlOptions =>
-                sqlOptions.MigrationsAssembly("ERP.Persistence.SqlServer"));
+            {
+                sqlOptions.MigrationsAssembly("ERP.Persistence.SqlServer");
+                sqlOptions.EnableRetryOnFailure(
+                    maxRetryCount: 3,
+                    maxRetryDelay: TimeSpan.FromSeconds(5),
+                    errorNumbersToAdd: null);
+                sqlOptions.CommandTimeout(30);
+            });
             options.AddInterceptors(
                 sp.GetRequiredService<AuditableEntityInterceptor>(),
                 sp.GetRequiredService<DomainEventDispatcherInterceptor>());
@@ -134,6 +143,13 @@ public static class InfrastructureServiceExtensions
         // {
         //     options.Configuration = configuration.GetConnectionString("Redis");
         // });
+
+        // ──────────────────────────────────────────────────────
+        // EMAIL (MailKit SMTP)
+        // ──────────────────────────────────────────────────────
+
+        services.Configure<EmailSettings>(configuration.GetSection(EmailSettings.SectionName));
+        services.AddSingleton<IEmailService, SmtpEmailService>();
 
         return services;
     }

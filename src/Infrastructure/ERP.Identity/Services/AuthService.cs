@@ -1,4 +1,6 @@
 using System.IdentityModel.Tokens.Jwt;
+using System.Security.Cryptography;
+using ERP.Application.Abstractions.Email;
 using ERP.Application.Abstractions.Identity;
 using ERP.Application.Abstractions.Identity.Contracts;
 using ERP.Identity.Abstractions;
@@ -46,6 +48,7 @@ public class AuthService : IAuthService
     private readonly IMasterUnitOfWork _unitOfWork;
     private readonly ITokenService _tokenService;
     private readonly IMemoryCache _cache;
+    private readonly IEmailService _emailService;
     private readonly JwtSettings _jwtSettings;
     private readonly ILogger<AuthService> _logger;
 
@@ -64,6 +67,7 @@ public class AuthService : IAuthService
         IMasterUnitOfWork unitOfWork,
         ITokenService tokenService,
         IMemoryCache cache,
+        IEmailService emailService,
         IOptions<JwtSettings> jwtSettings,
         ILogger<AuthService> logger)
     {
@@ -74,6 +78,7 @@ public class AuthService : IAuthService
         _unitOfWork = unitOfWork;
         _tokenService = tokenService;
         _cache = cache;
+        _emailService = emailService;
         _jwtSettings = jwtSettings.Value;
         _logger = logger;
     }
@@ -467,6 +472,127 @@ public class AuthService : IAuthService
 
         _logger.LogInformation("Password changed for user {UserId}. {SessionCount} sessions revoked.", userId, activeSessions.Count);
         return Result.Success();
+    }
+
+    public async Task<Result<ForgotPasswordResponse>> ForgotPasswordAsync(ForgotPasswordRequest request, bool exposeToken = false)
+    {
+        var normalizedEmail = request.Email.ToUpperInvariant();
+        var user = await _users.GetByNormalizedEmailAsync(normalizedEmail);
+
+        // Always return success to prevent email enumeration (don't reveal whether the email exists)
+        if (user is null || !user.IsActive)
+        {
+            _logger.LogInformation("ForgotPassword: no active user found for email (not disclosed to caller)");
+            return Result.Success(new ForgotPasswordResponse("If that email is registered, a reset link has been sent."));
+        }
+
+        // Generate a cryptographically secure random token
+        var plainToken = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))
+            .Replace('+', '-').Replace('/', '_').TrimEnd('='); // base64url-safe
+
+        user.PasswordResetTokenHash = ComputeSha256Hash(plainToken);
+        user.PasswordResetTokenExpiry = DateTime.UtcNow.AddMinutes(15);
+
+        await _unitOfWork.SaveChangesAsync();
+
+        _logger.LogInformation("PasswordResetToken issued for user {UserId}", user.Id);
+
+        if (!exposeToken)
+        {
+            try
+            {
+                await _emailService.SendAsync(new EmailMessage(
+                    To: request.Email,
+                    Subject: "ERP — Password Reset",
+                    HtmlBody: $"""
+                        <p>Hi {user.FirstName},</p>
+                        <p>We received a request to reset your password. Use the token below to set a new password:</p>
+                        <p style="font-family:monospace;background:#f4f4f4;padding:12px;border-radius:4px;word-break:break-all;">{plainToken}</p>
+                        <p>This token expires in 15 minutes. If you did not request this, please ignore this email.</p>
+                        <p>— ERP System</p>
+                        """,
+                    PlainTextBody: $"Hi {user.FirstName},\n\nYour password reset token: {plainToken}\n\nExpires in 15 minutes."));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to send password reset email to {Email}", request.Email);
+            }
+        }
+
+        return Result.Success(new ForgotPasswordResponse(
+            "If that email is registered, a reset link has been sent.",
+            exposeToken ? plainToken : null));
+    }
+
+    public async Task<Result> ResetPasswordAsync(ResetPasswordRequest request)
+    {
+        var normalizedEmail = request.Email.ToUpperInvariant();
+        var user = await _users.GetByNormalizedEmailAsync(normalizedEmail);
+
+        if (user is null || !user.IsActive
+            || user.PasswordResetTokenHash is null
+            || user.PasswordResetTokenExpiry is null)
+            return Result.Failure(Error.Validation("Auth.InvalidResetToken", "Invalid or expired password reset token."));
+
+        if (user.PasswordResetTokenExpiry < DateTime.UtcNow)
+        {
+            // Clear the expired token
+            user.PasswordResetTokenHash = null;
+            user.PasswordResetTokenExpiry = null;
+            await _unitOfWork.SaveChangesAsync();
+            return Result.Failure(Error.Validation("Auth.ResetTokenExpired", "Password reset token has expired. Please request a new one."));
+        }
+
+        var suppliedHash = ComputeSha256Hash(request.Token);
+        if (suppliedHash != user.PasswordResetTokenHash)
+            return Result.Failure(Error.Validation("Auth.InvalidResetToken", "Invalid or expired password reset token."));
+
+        // Check password history
+        var recentPasswords = await _passwordHistory.GetRecentForUserAsync(user.Id, PasswordHistoryCount);
+        if (recentPasswords.Any(h => BCrypt.Net.BCrypt.Verify(request.NewPassword, h.PasswordHash)))
+            return Result.Failure(Error.Validation("Auth.PasswordReused",
+                $"Cannot reuse any of your last {PasswordHistoryCount} passwords."));
+
+        if (BCrypt.Net.BCrypt.Verify(request.NewPassword, user.PasswordHash))
+            return Result.Failure(Error.Validation("Auth.PasswordReused", "New password cannot be the same as the current password."));
+
+        // Archive old password
+        await _passwordHistory.AddAsync(new UserPasswordHistory
+        {
+            UserId = user.Id,
+            PasswordHash = user.PasswordHash,
+            ChangedAt = DateTime.UtcNow
+        });
+
+        user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.NewPassword);
+        user.LastPasswordChangedAt = DateTime.UtcNow;
+        user.SecurityStamp = Guid.NewGuid().ToString();
+        user.MustChangePassword = false;
+        user.PasswordResetTokenHash = null;
+        user.PasswordResetTokenExpiry = null;
+
+        // Revoke all sessions — password changed outside of normal flow
+        var activeSessions = await _sessions.GetActiveSessionsForUserAsync(user.Id);
+        foreach (var session in activeSessions)
+        {
+            session.IsRevoked = true;
+            session.RevokedAt = DateTime.UtcNow;
+            session.RevokedReason = "PasswordReset";
+        }
+
+        await _unitOfWork.SaveChangesAsync();
+
+        foreach (var session in activeSessions)
+            InvalidateJtiCache(session.AccessTokenJti);
+
+        _logger.LogInformation("Password reset for user {UserId}. {SessionCount} sessions revoked.", user.Id, activeSessions.Count);
+        return Result.Success();
+    }
+
+    private static string ComputeSha256Hash(string input)
+    {
+        var bytes = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(input));
+        return Convert.ToHexString(bytes).ToLowerInvariant();
     }
 
     /// <summary>

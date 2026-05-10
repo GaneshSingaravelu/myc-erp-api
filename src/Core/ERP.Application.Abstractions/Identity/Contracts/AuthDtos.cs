@@ -85,6 +85,10 @@ public record UpdateUserRequest(
 
 public record AssignRolesRequest(IList<Guid> RoleIds);
 
+public record AssignTenantsRequest(IList<Guid> TenantIds);
+
+public record UserTenantDto(Guid TenantId, string TenantCode, string TenantName, bool IsDefault);
+
 // ──────────────────────────────────────────────────────
 // ROLE DTOs
 // ──────────────────────────────────────────────────────
@@ -98,6 +102,20 @@ public record RoleDto(
 public record CreateRoleRequest(string Name, string? Description);
 public record UpdateRoleRequest(string Name, string? Description);
 public record AssignPermissionsRequest(IList<Guid> PermissionIds);
+
+// ──────────────────────────────────────────────────────
+// FORGOT / RESET PASSWORD
+// ──────────────────────────────────────────────────────
+public record ForgotPasswordRequest(string Email);
+
+public record ResetPasswordRequest(string Email, string Token, string NewPassword);
+
+/// <summary>
+/// Response for forgot-password. ResetToken is only populated in non-Production
+/// environments (for smoke testing without an email server). In Production the
+/// token is sent via email and this field is null.
+/// </summary>
+public record ForgotPasswordResponse(string Message, string? ResetToken = null);
 
 // ──────────────────────────────────────────────────────
 // PERMISSION DTOs

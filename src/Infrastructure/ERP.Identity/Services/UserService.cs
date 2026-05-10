@@ -17,15 +17,18 @@ public class UserService : IUserService
 {
     private readonly IUserRepository _users;
     private readonly IRoleRepository _roles;
+    private readonly ITenantRepository _tenants;
     private readonly IMasterUnitOfWork _uow;
 
     public UserService(
         IUserRepository users,
         IRoleRepository roles,
+        ITenantRepository tenants,
         IMasterUnitOfWork uow)
     {
         _users = users;
         _roles = roles;
+        _tenants = tenants;
         _uow = uow;
     }
 
@@ -121,6 +124,60 @@ public class UserService : IUserService
                 return Result.Failure(Error.NotFound("Role", roleId));
 
             user.UserRoles.Add(new AppUserRole { UserId = userId, RoleId = roleId });
+        }
+
+        await _uow.SaveChangesAsync();
+        return Result.Success();
+    }
+
+    public async Task<Result<IReadOnlyList<UserTenantDto>>> GetUserTenantsAsync(Guid userId)
+    {
+        var user = await _users.GetByIdAsync(userId);
+        if (user is null)
+            return Result.Failure<IReadOnlyList<UserTenantDto>>(Error.NotFound("User", userId));
+
+        var userTenants = await _users.GetUserTenantsAsync(userId);
+
+        var dtos = userTenants.Select(ut => new UserTenantDto(
+            TenantId: ut.TenantId,
+            TenantCode: ut.Tenant.Code,
+            TenantName: ut.Tenant.Name,
+            IsDefault: ut.IsDefault
+        )).ToList();
+
+        return Result.Success<IReadOnlyList<UserTenantDto>>(dtos);
+    }
+
+    public async Task<Result> AssignTenantsAsync(Guid userId, AssignTenantsRequest request)
+    {
+        var user = await _users.GetByIdAsync(userId);
+        if (user is null)
+            return Result.Failure(Error.NotFound("User", userId));
+
+        // Validate all tenant IDs exist
+        foreach (var tenantId in request.TenantIds)
+        {
+            if (!await _tenants.ExistsByIdAsync(tenantId))
+                return Result.Failure(Error.NotFound("Tenant", tenantId));
+        }
+
+        // Remove existing tenant assignments
+        var existingRows = await _users.GetUserTenantRowsAsync(userId);
+        _users.RemoveUserTenants(existingRows);
+
+        // Add new tenant assignments (first one is default)
+        var isFirst = true;
+        foreach (var tenantId in request.TenantIds)
+        {
+            await _users.AddUserTenantAsync(new UserTenant
+            {
+                UserId = userId,
+                TenantId = tenantId,
+                IsDefault = isFirst,
+                IsActive = true,
+                JoinedAt = DateTime.UtcNow
+            });
+            isFirst = false;
         }
 
         await _uow.SaveChangesAsync();

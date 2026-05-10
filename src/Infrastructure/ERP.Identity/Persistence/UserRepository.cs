@@ -81,6 +81,9 @@ public sealed class UserRepository : IUserRepository
     public Task<bool> ExistsByNormalizedEmailAsync(string normalizedEmail, CancellationToken cancellationToken = default)
         => _context.Set<AppUser>().AnyAsync(u => u.NormalizedEmail == normalizedEmail, cancellationToken);
 
+    public Task<AppUser?> GetByNormalizedEmailAsync(string normalizedEmail, CancellationToken cancellationToken = default)
+        => _context.Set<AppUser>().FirstOrDefaultAsync(u => u.NormalizedEmail == normalizedEmail, cancellationToken);
+
     public async Task AddAsync(AppUser user, CancellationToken cancellationToken = default)
         => await _context.Set<AppUser>().AddAsync(user, cancellationToken);
 
@@ -88,4 +91,32 @@ public sealed class UserRepository : IUserRepository
 
     public void RemoveUserRoles(IEnumerable<AppUserRole> userRoles)
         => _context.Set<AppUserRole>().RemoveRange(userRoles);
+
+    // ── Tenant assignment ──────────────────────────────────────────────
+
+    public async Task<IReadOnlyList<UserTenant>> GetUserTenantsAsync(Guid userId, CancellationToken cancellationToken = default)
+    {
+        var tenants = await _context.Set<UserTenant>()
+            .Include(ut => ut.Tenant)
+            .Where(ut => ut.UserId == userId && ut.IsActive)
+            .OrderBy(ut => ut.Tenant.Name)
+            .ToListAsync(cancellationToken);
+
+        return tenants;
+    }
+
+    public async Task<IReadOnlyList<UserTenant>> GetUserTenantRowsAsync(Guid userId, CancellationToken cancellationToken = default)
+    {
+        var rows = await _context.Set<UserTenant>()
+            .Where(ut => ut.UserId == userId)
+            .ToListAsync(cancellationToken);
+
+        return rows;
+    }
+
+    public async Task AddUserTenantAsync(UserTenant userTenant, CancellationToken cancellationToken = default)
+        => await _context.Set<UserTenant>().AddAsync(userTenant, cancellationToken);
+
+    public void RemoveUserTenants(IEnumerable<UserTenant> userTenants)
+        => _context.Set<UserTenant>().RemoveRange(userTenants);
 }
