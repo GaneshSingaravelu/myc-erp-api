@@ -222,7 +222,7 @@ dotnet test ERP.slnx
 
 | Library | License | Notes |
 |---|---|---|
-| `ngx-cerious-widgets` | MIT | ✅ No revenue threshold. ⚠️ Built for Angular 18 — must test `--legacy-peer-deps` against Angular 20 before committing. If compat fails → use Angular CDK fallback. |
+| `ngx-cerious-widgets` | MIT | ✅ No revenue threshold. v1.0.15, peerDeps `>=16.0.0`. Requires `write-excel-file >=1.4.25` (MIT) as peer dep. ⚠️ Must install with `--legacy-peer-deps` and build-test against Angular 20 before committing. If compat fails → use Angular CDK fallback. |
 
 **ERP API (`erp_api`) — .NET NuGet packages**
 
@@ -289,13 +289,17 @@ If `ngx-cerious-widgets` fails Angular 20 compatibility test:
   - [x] **2.9B — User Management:** UsersPage + RolesPage refactored to use shared Modal, ConfirmDialog, CheckboxDropdown, ToastService. Delete uses ConfirmDialog instead of `window.confirm`. Toast notifications on all CRUD operations.
   - [x] **2.9C — Email Service + Forgot/Reset Password:** `IEmailService` abstraction in `ERP.Application.Abstractions.Email`, `SmtpEmailService` (MailKit) in `ERP.Infrastructure.Email`, `EmailSettings` config. `ForgotPasswordAsync` sends email in production, returns token in dev. Angular pages already existed (ForgotPasswordComponent, ResetPasswordComponent).
   - [x] **2.9D — Grid Export:** `GridExportService` in `libs/ui/src/lib/grid-export/` — ExcelJS (.xlsx), CSV (built-in), pdfmake (PDF). Grid component gets `[exportable]` and `[exportFileName]` inputs. Export buttons appear in grid footer.
-- [~] **Phase 2.9E — UI Polish & Admin Completion:**
+- [x] **Phase 2.9E — UI Polish & Admin Completion:**
   - [ ] **2.9E-0 — Nx Serve Warnings:** Fix 3 warnings: (1) update `baseline-browser-mapping`, (2) update `caniuse-lite` / Browserslist DB, (3) set `tsconfig.json` target to ES2022 to suppress Angular CLI warning.
   - [x] **2.9E-1 — UI Alignment & Spacing:** Modal button order (primary action first, Cancel last, right-aligned with gap). `[modal-footer]` flex styles in consumer components. Tab spacing `margin-bottom: 1.25rem`. Files: `users-page.ts`, `roles-page.ts`, `confirm-dialog.ts`.
   - [x] **2.9E-2 — Tenant Mapping for Users:** API: `IUserRepository.GetUserTenantsAsync/AddUserTenantAsync/RemoveUserTenants`, `UserService.GetUserTenantsAsync/AssignTenantsAsync`, `UsersController GET/PUT /users/{id}/tenants`. Angular: `TenantApiService`, "Tenants" tab with CheckboxDropdown in users-page modal. 5 new unit tests. Tests: 117/117 + 13/13 ✅
   - [x] **2.9E-3 — Permissions Tree UI:** API: `MenuService.GetPermissionTreeAsync()` returns Module → Menu → Permissions tree, `MenusController GET /menus/permission-tree`. Angular: `TreeCheckbox` component (`libs/ui/src/lib/tree-checkbox/`) with expand/collapse, parent toggle, indeterminate state. `roles-page.ts` refactored to use TreeCheckbox + `MenuApiService.getPermissionTree()` instead of flat category list.
   - [x] **2.9E-4 — Tenant Management Screen:** `tenants-page.ts` in `libs/feature/user-management/`. Grid: Name, Code, DB Provider, Status, Users, Created. Modal: create (Code/Name/Provider/ConnectionString) and edit (Name/Active). Actions: Edit, Migrate DB, Deactivate. Route wired in `user-management.routes.ts`. `TenantApiService` full CRUD + migrate.
   - [x] **2.9E-5 — Login Redirect Bug:** `isStoredTokenValid()` in AuthStore decodes JWT + checks `exp` with 30s clock-skew. `LoginComponent.submit()` resets `hasNavigated = false`. Removed debug console.log.
+  - [x] **2.9E-6 — User Management Unit Tests:** 77 tests across UsersPage (30), RolesPage (25), TenantsPage (22). Covers: CRUD, form validation, roles/tenants tabs, delete confirmation, toggle active, error handling. Removed `passWithNoTests` workaround.
+  - [x] **2.9E-7 — CI Lint Fixes:** Added missing `.eslintrc.json` for user-management lib, missing peerDependencies in `libs/ui/package.json`, `label-has-associated-control` accessibility fixes (for/id pairs on all form labels). CI green: PR #17 merged.
+- [~] **Phase 2.9F — Grid Library Decision:**
+  - [ ] **`ngx-cerious-widgets` compatibility test:** v1.0.15, MIT license, peerDeps `>=16.0.0` (should work with Angular 20). Also requires `write-excel-file` (MIT) as peer dependency. Install with `--legacy-peer-deps` and build-test. If compat fails → CDK table fallback.
 - [ ] Phase 3 Preparation: Sample seed users (Operator, Inspector, Viewer with multi-tenant assignments) + Tenant dropdown UX
 - [ ] Phase 3: SignalR integration (job card status broadcasts, QA alerts, tenant-scoped hub groups)
 - [ ] Phase 4: Reporting (open-source, Angular-compatible)
@@ -395,17 +399,25 @@ All four items below shipped:
 
 **Phase 2.9A–D — COMPLETED.** Shared UI components, User/Role management, Email service, Grid export all shipped.
 
-**Phase 2.9E — UI Polish & Admin Completion — MOSTLY COMPLETE:**
-- 2.9E-1 through 2.9E-5: ✅ All done
-- 2.9E-0 (Nx Serve Warnings): ⏳ Deferred to last — update `baseline-browser-mapping`, `caniuse-lite`, tsconfig target ES2022
+**Phase 2.9E — UI Polish & Admin Completion — DONE:**
+- 2.9E-1 through 2.9E-7: ✅ All done (including 77 unit tests + CI lint fixes)
+- 2.9E-0 (Nx Serve Warnings): ⏳ Deferred — low priority, cosmetic only
 
 **Bug fix (2026-05-09):** `AuditLog` entity was accidentally included in `MasterDbContext` model via assembly scanning (`AuditLogConfiguration` lives in `ERP.Persistence`, same assembly `MasterDbContext` scans). Fixed by adding predicate filter to `ApplyConfigurationsFromAssembly`. Migration regenerated — `AuditLogs` table no longer created in Master DB.
 
 **Docs (2026-05-09):** Added "Concrete Example: Admin User Flow" section to `docs/DATABASE_ARCHITECTURE.md` — traces admin user through all tables for login, sidebar, business requests, permission tree, role comparison, and multi-tenant assignment.
 
-**Start here next: 2.9E-0 (Nx Serve Warnings), then Phase 3 Prep.**
+**Angular CI fixes (2026-05-13):** Added `.eslintrc.json` for user-management lib (was missing, causing "all files ignored" error). Added peerDependencies to `libs/ui/package.json` (`@angular/forms`, `exceljs`, `file-saver`, `pdfmake`). Fixed `label-has-associated-control` accessibility errors with `for`/`id` pairs. PR #17 merged, CI green.
 
-**Phase 3 Prep (after 2.9E-0):**
+**Start here next: Phase 2.9F (Grid Library Decision), then Phase 3 Prep.**
+
+**Phase 2.9F — Grid Library Decision:**
+- `ngx-cerious-widgets` v1.0.15 (MIT, peerDeps `>=16.0.0`). Requires `write-excel-file` (MIT) as peer dep.
+- Install on a feature branch with `--legacy-peer-deps`, run `nx build erp-shell` + `nx test ui` to verify Angular 20 compat.
+- If compat fails → fallback to `@angular/cdk/table` wrapper in `libs/ui/src/lib/grid/`.
+- The project already has a custom `Grid` component (`libs/ui/src/lib/grid/grid.ts`) — evaluate whether `ngx-cerious-widgets` replaces it or complements it.
+
+**Phase 3 Prep (after grid decision):**
 - Sample seed users (Operator/Inspector/Viewer multi-tenant) — already partially done (sample users in IdentitySeeder for Dev), needs multi-tenant cross-assignment
 - Tenant dropdown UX — public list-tenants endpoint → Angular tenant selector at login
 - Phase 3: SignalR (job card status broadcasts, QA alerts, tenant-scoped hub groups)
@@ -430,7 +442,7 @@ All four items below shipped:
 ## CI/CD Status
 
 - **API (.NET 10):** GitHub Actions workflow — `dotnet build ERP.slnx` → `dotnet test ERP.slnx`. NuGet cache enabled. Permissions `contents: read`. Currently green: 117/117 unit tests + 13/13 architecture guards.
-- **UI (Angular):** GitHub Actions workflow — `npm ci` → `npx nx run-many --target lint --all` → `npx nx run-many --target test --all`. npm cache enabled.
+- **UI (Angular):** GitHub Actions workflow — `npm ci` → `npx nx run-many --target lint --all` → `npx nx run-many --target test --all`. npm cache enabled. Currently green: 130+ tests across 18 projects (77 in user-management alone).
 - **`.gitattributes`** enforces LF line endings repo-wide (eliminates CRLF noise on Windows contributors).
 - **Recommended next:** Branch protection on `main` requiring CI green + 1 review.
 
