@@ -83,7 +83,21 @@ public record UpdateUserRequest(
     string LastName,
     bool IsActive);
 
-public record AssignRolesRequest(IList<Guid> RoleIds);
+/// <summary>
+/// Role assignment is TENANT-SCOPED: the UserRoles row is keyed on
+/// (UserId, RoleId, TenantId), so the tenant has to be stated, not guessed.
+///
+/// <para><b>TenantId is required.</b> It is deliberately not inferred from the
+/// target user's default tenant, nor from the caller's <c>X-Tenant-Id</c>: the
+/// first cannot express "Admin in tenant A, Viewer in tenant B", and the second
+/// is the administrator's tenant, which has nothing to do with the target
+/// user.</para>
+///
+/// <para><see cref="RoleIds"/> replaces the user's roles <b>within
+/// <see cref="TenantId"/> only</b>. An empty list clears them for that tenant and
+/// leaves every other tenant untouched.</para>
+/// </summary>
+public record AssignRolesRequest(Guid TenantId, IList<Guid> RoleIds);
 
 public record AssignTenantsRequest(IList<Guid> TenantIds);
 

@@ -107,23 +107,71 @@ public class UserService : IUserService
         return Result.Success();
     }
 
+    /// <summary>
+    /// Replace a user's roles WITHIN ONE TENANT.
+    ///
+    /// <para>UserRoles is keyed on (UserId, RoleId, TenantId), so every row needs a
+    /// tenant. The tenant comes from the request and is never inferred — not from
+    /// the user's default tenant, not from the caller's current tenant.</para>
+    ///
+    /// <para><b>Scope:</b> only the requested tenant's rows are replaced. Roles the
+    /// user holds in other tenants are left alone, which is the whole point of a
+    /// tenant-scoped assignment.</para>
+    ///
+    /// <para><b>Order:</b> everything is validated before anything is removed. The
+    /// previous version deleted the user's rows first and validated role ids
+    /// afterwards, relying on "SaveChanges was never reached" to stay safe — a
+    /// guarantee that evaporates the moment anything else calls SaveChanges.</para>
+    /// </summary>
     public async Task<Result> AssignRolesAsync(Guid userId, AssignRolesRequest request)
     {
+        // ── Validate ────────────────────────────────────────────────────────
         var user = await _users.GetByIdForRoleAssignmentAsync(userId);
 
         if (user is null)
             return Result.Failure(Error.NotFound("User", userId));
 
-        // Remove existing role assignments
-        _users.RemoveUserRoles(user.UserRoles);
+        // Caught explicitly: an omitted tenantId binds to Guid.Empty, which would
+        // otherwise reach the database and surface as an opaque FK violation.
+        if (request.TenantId == Guid.Empty)
+            return Result.Failure(Error.Validation(
+                "Role.TenantRequired", "A tenant must be specified for role assignment."));
 
-        // Add new role assignments
-        foreach (var roleId in request.RoleIds)
+        if (!await _tenants.ExistsByIdAsync(request.TenantId))
+            return Result.Failure(Error.NotFound("Tenant", request.TenantId));
+
+        // Membership is a precondition, never a side effect: assigning a role must
+        // not quietly grant a user access to a tenant. Same check the login path
+        // uses, so "assigned to a tenant" means one thing across the service.
+        if (!await _users.IsAssignedToTenantAsync(userId, request.TenantId))
+            return Result.Failure(Error.Validation(
+                "User.NotInTenant", "User is not assigned to the specified tenant."));
+
+        // Deduplicated before persistence so caller repetition cannot trip the
+        // (UserId, RoleId, TenantId) unique index.
+        var roleIds = request.RoleIds.Distinct().ToList();
+
+        foreach (var roleId in roleIds)
         {
             if (!await _roles.ExistsByIdAsync(roleId))
                 return Result.Failure(Error.NotFound("Role", roleId));
+        }
 
-            user.UserRoles.Add(new AppUserRole { UserId = userId, RoleId = roleId });
+        // ── Mutate ──────────────────────────────────────────────────────────
+        var rolesInTenant = user.UserRoles
+            .Where(ur => ur.TenantId == request.TenantId)
+            .ToList();
+
+        _users.RemoveUserRoles(rolesInTenant);
+
+        foreach (var roleId in roleIds)
+        {
+            user.UserRoles.Add(new AppUserRole
+            {
+                UserId = userId,
+                RoleId = roleId,
+                TenantId = request.TenantId
+            });
         }
 
         await _uow.SaveChangesAsync();
