@@ -150,12 +150,34 @@ public class UserServiceTests : IdentityServiceTestBase
     }
 
     // ── AssignRolesAsync ──
+    //
+    // Role assignment is tenant-scoped: UserRoles is keyed on
+    // (UserId, RoleId, TenantId). These cover the validation ladder, which needs
+    // no relational provider. The integrity guarantees — the persisted TenantId,
+    // cross-tenant preservation and the unique index — live in
+    // UserService_AssignRolesRelationalTests, because the InMemory provider
+    // enforces neither foreign keys nor unique indexes and would pass regardless.
+
+    /// <summary>Seeds a tenant and makes <paramref name="user"/> a member of it.</summary>
+    private async Task<Tenant> SeedTenantWithMembershipAsync(AppUser user, string code = "ABC")
+    {
+        var tenant = await PersistAsync(CreateTestTenant(code));
+        await PersistAsync(new UserTenant
+        {
+            UserId = user.Id,
+            TenantId = tenant.Id,
+            IsDefault = true,
+            IsActive = true,
+            JoinedAt = DateTime.UtcNow
+        });
+        return tenant;
+    }
 
     [Fact]
     public async Task AssignRoles_WhenUserNotFound_ReturnsNotFound()
     {
         var role = await PersistAsync(CreateTestRole("Admin"));
-        var request = new AssignRolesRequest(new[] { role.Id });
+        var request = new AssignRolesRequest(Guid.NewGuid(), new[] { role.Id });
 
         var result = await _sut.AssignRolesAsync(Guid.NewGuid(), request);
 
@@ -164,34 +186,137 @@ public class UserServiceTests : IdentityServiceTestBase
     }
 
     [Fact]
-    public async Task AssignRoles_WhenAnyRoleMissing_ReturnsNotFound()
+    public async Task AssignRoles_WhenTenantIdIsEmpty_ReturnsValidationFailure()
     {
         var user = await PersistAsync(CreateTestUser("alice"));
-        var existingRole = await PersistAsync(CreateTestRole("Admin"));
-        await PersistAsync(new AppUserRole { UserId = user.Id, RoleId = existingRole.Id });
+        var role = await PersistAsync(CreateTestRole("Admin"));
 
-        // Second id doesn't exist — the loop should bail before SaveChanges.
-        var request = new AssignRolesRequest(new[] { existingRole.Id, Guid.NewGuid() });
+        // What a pre-tenant caller sends: the omitted tenantId binds to Guid.Empty.
+        // It must be rejected here rather than reaching the database as an FK error.
+        var request = new AssignRolesRequest(Guid.Empty, new[] { role.Id });
+
+        var result = await _sut.AssignRolesAsync(user.Id, request);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Role.TenantRequired", result.Error.Code);
+    }
+
+    [Fact]
+    public async Task AssignRoles_WhenTenantNotFound_ReturnsNotFound()
+    {
+        var user = await PersistAsync(CreateTestUser("alice"));
+        var role = await PersistAsync(CreateTestRole("Admin"));
+        var request = new AssignRolesRequest(Guid.NewGuid(), new[] { role.Id });
+
+        var result = await _sut.AssignRolesAsync(user.Id, request);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("Tenant.NotFound", result.Error.Code);
+    }
+
+    [Fact]
+    public async Task AssignRoles_WhenUserNotAssignedToTenant_ReturnsValidationFailure()
+    {
+        var user = await PersistAsync(CreateTestUser("alice"));
+        var role = await PersistAsync(CreateTestRole("Admin"));
+        var tenant = await PersistAsync(CreateTestTenant("ABC")); // no membership row
+
+        var request = new AssignRolesRequest(tenant.Id, new[] { role.Id });
+
+        var result = await _sut.AssignRolesAsync(user.Id, request);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("User.NotInTenant", result.Error.Code);
+    }
+
+    [Fact]
+    public async Task AssignRoles_WhenUserHasNoTenants_ReturnsNotInTenant()
+    {
+        // A user can legitimately have zero tenant memberships. They cannot receive
+        // a tenant-scoped role until a tenant is assigned to them first.
+        var user = await PersistAsync(CreateTestUser("orphan"));
+        var role = await PersistAsync(CreateTestRole("Admin"));
+        var tenant = await PersistAsync(CreateTestTenant("ABC"));
+
+        var result = await _sut.AssignRolesAsync(
+            user.Id, new AssignRolesRequest(tenant.Id, new[] { role.Id }));
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("User.NotInTenant", result.Error.Code);
+        Assert.Empty(Context.Set<AppUserRole>().Where(ur => ur.UserId == user.Id));
+    }
+
+    [Fact]
+    public async Task AssignRoles_WhenMembershipIsInactive_ReturnsNotInTenant()
+    {
+        // IsAssignedToTenantAsync filters on IsActive, so a deactivated membership
+        // is not a membership — the same rule the login path applies.
+        var user = await PersistAsync(CreateTestUser("alice"));
+        var role = await PersistAsync(CreateTestRole("Admin"));
+        var tenant = await PersistAsync(CreateTestTenant("ABC"));
+        await PersistAsync(new UserTenant
+        {
+            UserId = user.Id,
+            TenantId = tenant.Id,
+            IsDefault = true,
+            IsActive = false,
+            JoinedAt = DateTime.UtcNow
+        });
+
+        var result = await _sut.AssignRolesAsync(
+            user.Id, new AssignRolesRequest(tenant.Id, new[] { role.Id }));
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("User.NotInTenant", result.Error.Code);
+    }
+
+    [Fact]
+    public async Task AssignRoles_WhenAnyRoleMissing_ReturnsNotFoundAndPersistsNothing()
+    {
+        var user = await PersistAsync(CreateTestUser("alice"));
+        var tenant = await SeedTenantWithMembershipAsync(user);
+        var existingRole = await PersistAsync(CreateTestRole("Admin"));
+        await PersistAsync(new AppUserRole
+        {
+            UserId = user.Id,
+            RoleId = existingRole.Id,
+            TenantId = tenant.Id
+        });
+
+        // Second id doesn't exist — validation must bail before anything is removed.
+        var request = new AssignRolesRequest(tenant.Id, new[] { existingRole.Id, Guid.NewGuid() });
 
         var result = await _sut.AssignRolesAsync(user.Id, request);
 
         Assert.True(result.IsFailure);
         Assert.Equal("Role.NotFound", result.Error.Code); // The missing id is a role id, not the user.
-        // Structural guarantee: _uow.SaveChangesAsync() runs only after the loop
-        // completes successfully, so the staged role-replacement is never persisted.
+
+        // Stronger than the old structural argument: the pre-existing assignment is
+        // still there, because removal now happens only after validation passes.
+        var stillAssigned = await Context.Set<AppUserRole>()
+            .Where(ur => ur.UserId == user.Id)
+            .Select(ur => ur.RoleId)
+            .ToListAsync();
+        Assert.Equal(new[] { existingRole.Id }, stillAssigned);
     }
 
     [Fact]
     public async Task AssignRoles_ReplacesExistingAssignments()
     {
         var user = await PersistAsync(CreateTestUser("alice"));
+        var tenant = await SeedTenantWithMembershipAsync(user);
         var oldRole = await PersistAsync(CreateTestRole("Viewer"));
         var newRole1 = await PersistAsync(CreateTestRole("Admin"));
         var newRole2 = await PersistAsync(CreateTestRole("Operator"));
 
-        await PersistAsync(new AppUserRole { UserId = user.Id, RoleId = oldRole.Id });
+        await PersistAsync(new AppUserRole
+        {
+            UserId = user.Id,
+            RoleId = oldRole.Id,
+            TenantId = tenant.Id
+        });
 
-        var request = new AssignRolesRequest(new[] { newRole1.Id, newRole2.Id });
+        var request = new AssignRolesRequest(tenant.Id, new[] { newRole1.Id, newRole2.Id });
         var result = await _sut.AssignRolesAsync(user.Id, request);
 
         Assert.True(result.IsSuccess);
