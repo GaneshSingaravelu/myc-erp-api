@@ -92,6 +92,33 @@ public sealed class UserRepository : IUserRepository
     public void RemoveUserRoles(IEnumerable<AppUserRole> userRoles)
         => _context.Set<AppUserRole>().RemoveRange(userRoles);
 
+    /// <summary>
+    /// The user's active role assignments, each with its tenant, for a per-tenant read.
+    ///
+    /// <para>Only <c>IsActive</c> rows are returned, matching
+    /// <see cref="GetPermissionCodesForUserAsync"/> — the path that actually decides
+    /// what a user can do. A read disagreeing with it would surface roles that grant
+    /// nothing, and a caller replacing roles from such a list would silently
+    /// reactivate them.</para>
+    ///
+    /// <para>Tenant membership is deliberately NOT joined: this reports what is
+    /// persisted. Filtering by <c>UserTenant</c> here would hide assignments left
+    /// behind when a membership is removed, masking a known consistency gap instead
+    /// of surfacing it.</para>
+    /// </summary>
+    public async Task<IReadOnlyList<AppUserRole>> GetUserRoleAssignmentsAsync(
+        Guid userId, CancellationToken cancellationToken = default)
+    {
+        var assignments = await _context.Set<AppUserRole>()
+            .Include(ur => ur.Role)
+            .Where(ur => ur.UserId == userId && ur.IsActive)
+            .OrderBy(ur => ur.TenantId)
+            .ThenBy(ur => ur.Role.Name)
+            .ToListAsync(cancellationToken);
+
+        return assignments;
+    }
+
     // ── Tenant assignment ──────────────────────────────────────────────
 
     public async Task<IReadOnlyList<UserTenant>> GetUserTenantsAsync(Guid userId, CancellationToken cancellationToken = default)
