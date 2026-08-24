@@ -86,6 +86,13 @@ public interface IUserRepository
     /// </summary>
     void RemoveUserRoles(IEnumerable<AppUserRole> userRoles);
 
+    /// <summary>
+    /// Get all ACTIVE role assignments for a user, including the Role navigation
+    /// (RoleName is needed for the DTO projection), each carrying its TenantId.
+    /// Ordered by tenant then role name so the response is deterministic.
+    /// </summary>
+    Task<IReadOnlyList<AppUserRole>> GetUserRoleAssignmentsAsync(Guid userId, CancellationToken cancellationToken = default);
+
     // ── Tenant assignment ──────────────────────────────────────────────
 
     /// <summary>

@@ -103,6 +103,21 @@ public record AssignTenantsRequest(IList<Guid> TenantIds);
 
 public record UserTenantDto(Guid TenantId, string TenantCode, string TenantName, bool IsDefault);
 
+/// <summary>
+/// One tenant-scoped role assignment, as returned by `GET /users/{id}/roles`.
+///
+/// <para><b>Why this exists alongside <c>UserDto.Roles</c>.</b> `UserDto.Roles` is a
+/// flat <c>string[]</c> of role names collapsed across every tenant, so it
+/// identifies neither the tenant nor the role id. Since role assignment is
+/// tenant-scoped — <c>(UserId, RoleId, TenantId)</c> — a caller editing one
+/// tenant's roles cannot tell from that flat list which entries belong to the
+/// tenant it is editing. Acting on it would grant roles in the wrong tenant.
+/// This DTO carries the tenant, so per-tenant reads are exact.</para>
+///
+/// <para><c>UserId</c> is deliberately absent: it is already the route parameter.</para>
+/// </summary>
+public record UserRoleAssignmentDto(Guid TenantId, Guid RoleId, string RoleName);
+
 // ──────────────────────────────────────────────────────
 // ROLE DTOs
 // ──────────────────────────────────────────────────────

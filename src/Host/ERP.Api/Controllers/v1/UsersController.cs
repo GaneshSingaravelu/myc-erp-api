@@ -68,6 +68,14 @@ public class UsersController : ControllerBase
         return result.IsSuccess ? NoContent() : BadRequest(new { error = result.Error.Message });
     }
 
+    [HttpGet("{id:guid}/roles")]
+    [Authorize(Roles = "Admin")]
+    public async Task<IActionResult> GetUserRoles(Guid id)
+    {
+        var result = await _userService.GetUserRoleAssignmentsAsync(id);
+        return result.IsSuccess ? Ok(result.Value) : NotFound(new { error = result.Error.Message });
+    }
+
     [HttpGet("{id:guid}/tenants")]
     [Authorize(Roles = "Admin")]
     public async Task<IActionResult> GetUserTenants(Guid id)

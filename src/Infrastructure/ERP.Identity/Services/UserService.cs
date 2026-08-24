@@ -178,6 +178,37 @@ public class UserService : IUserService
         return Result.Success();
     }
 
+    /// <summary>
+    /// The user's tenant-scoped role assignments.
+    ///
+    /// <para>Exists because <c>UserDto.Roles</c> is a flat list of role names
+    /// collapsed across every tenant: it carries neither the tenant nor the role id,
+    /// so a caller editing one tenant's roles cannot tell which entries apply. With
+    /// assignment keyed on <c>(UserId, RoleId, TenantId)</c>, acting on that flat
+    /// list would write roles into the wrong tenant.</para>
+    ///
+    /// <para>A user with no assignments is not an error — an empty list is the
+    /// correct answer, and the common one for a newly created user.</para>
+    /// </summary>
+    public async Task<Result<IReadOnlyList<UserRoleAssignmentDto>>> GetUserRoleAssignmentsAsync(Guid userId)
+    {
+        var user = await _users.GetByIdAsync(userId);
+        if (user is null)
+            return Result.Failure<IReadOnlyList<UserRoleAssignmentDto>>(Error.NotFound("User", userId));
+
+        var assignments = await _users.GetUserRoleAssignmentsAsync(userId);
+
+        // One DTO per row, never collapsed by role name: the same role in two
+        // tenants is two distinct assignments and must stay distinguishable.
+        var dtos = assignments.Select(ur => new UserRoleAssignmentDto(
+            TenantId: ur.TenantId,
+            RoleId: ur.RoleId,
+            RoleName: ur.Role.Name
+        )).ToList();
+
+        return Result.Success<IReadOnlyList<UserRoleAssignmentDto>>(dtos);
+    }
+
     public async Task<Result<IReadOnlyList<UserTenantDto>>> GetUserTenantsAsync(Guid userId)
     {
         var user = await _users.GetByIdAsync(userId);
