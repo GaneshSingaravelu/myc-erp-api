@@ -34,6 +34,17 @@ public interface IRoleRepository
     /// <summary>Check whether a role with the given id exists.</summary>
     Task<bool> ExistsByIdAsync(Guid id, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Whether the role exists AND may be granted inside <paramref name="tenantId"/>.
+    ///
+    /// <para>AppRole.TenantId is nullable by design: null means a system role available
+    /// to every tenant, a GUID means a role owned by one tenant. A role owned by
+    /// another tenant is therefore not assignable here, and is reported as simply not
+    /// found so its existence is not disclosed.</para>
+    /// </summary>
+    Task<bool> ExistsAndIsAssignableInTenantAsync(
+        Guid roleId, Guid tenantId, CancellationToken cancellationToken = default);
+
     /// <summary>Check whether a role with the given (case-sensitive) name exists.</summary>
     Task<bool> ExistsByNameAsync(string name, CancellationToken cancellationToken = default);
 

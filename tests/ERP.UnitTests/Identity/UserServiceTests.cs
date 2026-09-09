@@ -1,4 +1,6 @@
 using ERP.Application.Abstractions.Identity.Contracts;
+using Moq;
+using ERP.Application.Abstractions.MultiTenancy;
 using ERP.Identity.Entities;
 using ERP.Identity.Services;
 using Microsoft.EntityFrameworkCore;
@@ -16,7 +18,7 @@ public class UserServiceTests : IdentityServiceTestBase
 
     public UserServiceTests()
     {
-        _sut = new UserService(Users, Roles, Tenants, UnitOfWork);
+        _sut = new UserService(Users, Roles, Tenants, UnitOfWork, TenantProvider);
     }
 
     // ── GetByIdAsync ──
@@ -33,10 +35,13 @@ public class UserServiceTests : IdentityServiceTestBase
     [Fact]
     public async Task GetById_WhenUserExists_ReturnsUserWithRoleNames()
     {
+        var tenant = await PersistAsync(CreateTestTenant("AAA"));
         var role = await PersistAsync(CreateTestRole("Admin"));
         var user = CreateTestUser("alice");
-        user.UserRoles.Add(new AppUserRole { RoleId = role.Id });
+        user.UserRoles.Add(new AppUserRole { RoleId = role.Id, TenantId = tenant.Id });
         await PersistAsync(user);
+        await PersistAsync(CreateMembership(user.Id, tenant.Id));
+        SetCurrentTenant(tenant.Id);
 
         var result = await _sut.GetByIdAsync(user.Id);
 
@@ -51,9 +56,16 @@ public class UserServiceTests : IdentityServiceTestBase
     [Fact]
     public async Task GetAll_ReturnsUsersOrderedByUserName()
     {
-        await PersistAsync(CreateTestUser("charlie"));
-        await PersistAsync(CreateTestUser("alice"));
-        await PersistAsync(CreateTestUser("bob"));
+        // Every user must be an active member of the acting tenant to appear at all —
+        // the list is a tenant roster now, not a workspace-wide identity dump.
+        var tenant = await PersistAsync(CreateTestTenant("AAA"));
+        SetCurrentTenant(tenant.Id);
+
+        foreach (var name in new[] { "charlie", "alice", "bob" })
+        {
+            var u = await PersistAsync(CreateTestUser(name));
+            await PersistAsync(CreateMembership(u.Id, tenant.Id));
+        }
 
         var result = await _sut.GetAllAsync();
 
@@ -92,6 +104,14 @@ public class UserServiceTests : IdentityServiceTestBase
     [Fact]
     public async Task Create_WithValidData_PersistsUserWithHashedPassword()
     {
+        // Creation now also writes a UserTenant for the acting tenant, so the tenant
+        // must be a real one. Without this the membership would point at Guid.Empty and
+        // pass only because the InMemory provider does not enforce foreign keys —
+        // the failure mode RelationalIdentityTestBase exists to rule out. The password
+        // and normalisation assertions below are unchanged.
+        var tenant = await PersistAsync(CreateTestTenant("AAA"));
+        SetCurrentTenant(tenant.Id);
+
         var request = new CreateUserRequest("newuser", "new@example.com", "Password@123", "New", "User");
 
         var result = await _sut.CreateAsync(request);
@@ -119,7 +139,14 @@ public class UserServiceTests : IdentityServiceTestBase
     [Fact]
     public async Task Update_PersistsNewFieldsAndDeactivation()
     {
+        // Update is tenant-scoped since P3: the target must be an active member of
+        // the acting tenant. The assertions below — that the new field values are
+        // persisted, including deactivation — are unchanged; only the setup now
+        // reflects that a user is reached through a tenant rather than globally.
+        var tenant = await PersistAsync(CreateTestTenant("AAA"));
+        SetCurrentTenant(tenant.Id);
         var user = await PersistAsync(CreateTestUser("alice"));
+        await PersistAsync(CreateMembership(user.Id, tenant.Id));
         var request = new UpdateUserRequest("alice2@example.com", "Alice", "Smith", IsActive: false);
 
         var result = await _sut.UpdateAsync(user.Id, request);
@@ -158,10 +185,17 @@ public class UserServiceTests : IdentityServiceTestBase
     // UserService_AssignRolesRelationalTests, because the InMemory provider
     // enforces neither foreign keys nor unique indexes and would pass regardless.
 
-    /// <summary>Seeds a tenant and makes <paramref name="user"/> a member of it.</summary>
+    /// <summary>
+    /// Seeds a tenant, makes <paramref name="user"/> a member of it, and acts inside it.
+    ///
+    /// The acting context is set here because role assignment now checks actor
+    /// authority before anything else: a request naming a tenant the caller is not
+    /// authenticated for is refused outright.
+    /// </summary>
     private async Task<Tenant> SeedTenantWithMembershipAsync(AppUser user, string code = "ABC")
     {
         var tenant = await PersistAsync(CreateTestTenant(code));
+        SetCurrentTenant(tenant.Id, code);
         await PersistAsync(new UserTenant
         {
             UserId = user.Id,
@@ -176,8 +210,13 @@ public class UserServiceTests : IdentityServiceTestBase
     [Fact]
     public async Task AssignRoles_WhenUserNotFound_ReturnsNotFound()
     {
+        // The actor gate runs first, so the request must name the tenant the caller is
+        // authenticated for; otherwise this would fail as unauthorized and never reach
+        // the user lookup it is meant to exercise.
         var role = await PersistAsync(CreateTestRole("Admin"));
-        var request = new AssignRolesRequest(Guid.NewGuid(), new[] { role.Id });
+        var tenant = await PersistAsync(CreateTestTenant("ABC"));
+        SetCurrentTenant(tenant.Id);
+        var request = new AssignRolesRequest(tenant.Id, new[] { role.Id });
 
         var result = await _sut.AssignRolesAsync(Guid.NewGuid(), request);
 
@@ -204,9 +243,16 @@ public class UserServiceTests : IdentityServiceTestBase
     [Fact]
     public async Task AssignRoles_WhenTenantNotFound_ReturnsNotFound()
     {
+        // Reaching this error now requires the acting context itself to name a tenant
+        // that does not exist — i.e. a misconfigured tenant provider. That is exactly
+        // the case the check still guards: a broken provider must fail closed rather
+        // than become an authorization bypass. A body naming some OTHER absent tenant
+        // is refused earlier, by the actor gate, and is covered in the P5 suite.
         var user = await PersistAsync(CreateTestUser("alice"));
         var role = await PersistAsync(CreateTestRole("Admin"));
-        var request = new AssignRolesRequest(Guid.NewGuid(), new[] { role.Id });
+        var missingTenantId = Guid.NewGuid();
+        SetCurrentTenant(missingTenantId);
+        var request = new AssignRolesRequest(missingTenantId, new[] { role.Id });
 
         var result = await _sut.AssignRolesAsync(user.Id, request);
 
@@ -220,6 +266,7 @@ public class UserServiceTests : IdentityServiceTestBase
         var user = await PersistAsync(CreateTestUser("alice"));
         var role = await PersistAsync(CreateTestRole("Admin"));
         var tenant = await PersistAsync(CreateTestTenant("ABC")); // no membership row
+        SetCurrentTenant(tenant.Id);
 
         var request = new AssignRolesRequest(tenant.Id, new[] { role.Id });
 
@@ -237,6 +284,7 @@ public class UserServiceTests : IdentityServiceTestBase
         var user = await PersistAsync(CreateTestUser("orphan"));
         var role = await PersistAsync(CreateTestRole("Admin"));
         var tenant = await PersistAsync(CreateTestTenant("ABC"));
+        SetCurrentTenant(tenant.Id);
 
         var result = await _sut.AssignRolesAsync(
             user.Id, new AssignRolesRequest(tenant.Id, new[] { role.Id }));
@@ -262,6 +310,7 @@ public class UserServiceTests : IdentityServiceTestBase
             IsActive = false,
             JoinedAt = DateTime.UtcNow
         });
+        SetCurrentTenant(tenant.Id);
 
         var result = await _sut.AssignRolesAsync(
             user.Id, new AssignRolesRequest(tenant.Id, new[] { role.Id }));
@@ -343,8 +392,11 @@ public class UserServiceTests : IdentityServiceTestBase
     }
 
     [Fact]
-    public async Task GetUserTenants_ReturnsActiveTenantAssignments()
+    public async Task GetUserTenants_ReturnsOnlyActingTenantMembership()
     {
+        // Was: "returns every active membership". A Tenant A administrator must not
+        // discover from this endpoint that the user also belongs to XYZ, so the
+        // response is now the acting tenant's membership alone.
         var user = await PersistAsync(CreateTestUser("alice"));
         var tenant1 = await PersistAsync(CreateTestTenant("ABC"));
         var tenant2 = await PersistAsync(CreateTestTenant("XYZ"));
@@ -354,11 +406,14 @@ public class UserServiceTests : IdentityServiceTestBase
             UserId = user.Id, TenantId = tenant1.Id,
             IsDefault = true, IsActive = true, JoinedAt = DateTime.UtcNow
         });
+        // Active membership of a SECOND tenant — previously returned, now hidden.
         await PersistAsync(new UserTenant
         {
             UserId = user.Id, TenantId = tenant2.Id,
-            IsDefault = false, IsActive = false, JoinedAt = DateTime.UtcNow // inactive
+            IsDefault = false, IsActive = true, JoinedAt = DateTime.UtcNow
         });
+
+        SetCurrentTenant(tenant1.Id);
 
         var result = await _sut.GetUserTenantsAsync(user.Id);
 
@@ -366,14 +421,25 @@ public class UserServiceTests : IdentityServiceTestBase
         Assert.Single(result.Value);
         Assert.Equal("ABC", result.Value[0].TenantCode);
         Assert.True(result.Value[0].IsDefault);
+
+        // The security assertion: XYZ's existence is not disclosed to ABC's admin.
+        Assert.DoesNotContain(result.Value, t => t.TenantCode == "XYZ");
     }
 
     // ── AssignTenantsAsync ──
+    //
+    // The global replace-all contract these tests were written against has been
+    // RETIRED BY OWNER SECURITY DECISION, not corrected as a setup mistake. It let a
+    // Tenant A administrator delete another tenant's membership by submitting the only
+    // membership the tenant-scoped read had shown them. Membership management is now
+    // confined to the caller's own tenant, and neither attachment nor ejection is
+    // supported here.
 
     [Fact]
     public async Task AssignTenants_WhenUserNotFound_ReturnsNotFound()
     {
         var tenant = await PersistAsync(CreateTestTenant("ABC"));
+        SetCurrentTenant(tenant.Id, "ABC");
         var request = new AssignTenantsRequest(new[] { tenant.Id });
 
         var result = await _sut.AssignTenantsAsync(Guid.NewGuid(), request);
@@ -383,34 +449,49 @@ public class UserServiceTests : IdentityServiceTestBase
     }
 
     [Fact]
-    public async Task AssignTenants_WhenAnyTenantMissing_ReturnsNotFound()
+    public async Task AssignTenants_WithATenantIdOtherThanCurrent_IsRefusedWithoutRevealingWhetherItExists()
     {
+        // Superseded contract: this used to answer "Tenant.NotFound", which told the
+        // caller whether an id they were not entitled to name was real. Any id other
+        // than the current tenant is now simply unauthorized, existent or not.
         var user = await PersistAsync(CreateTestUser("alice"));
         var tenant = await PersistAsync(CreateTestTenant("ABC"));
+        await PersistAsync(CreateMembership(user.Id, tenant.Id));
+        SetCurrentTenant(tenant.Id, "ABC");
+
         var request = new AssignTenantsRequest(new[] { tenant.Id, Guid.NewGuid() });
 
         var result = await _sut.AssignTenantsAsync(user.Id, request);
 
         Assert.True(result.IsFailure);
-        Assert.Equal("Tenant.NotFound", result.Error.Code);
+        Assert.Equal("Tenant.NotAuthorized", result.Error.Code);
     }
 
     [Fact]
-    public async Task AssignTenants_ReplacesExistingAssignments()
+    public async Task AssignTenants_CurrentTenantSave_PreservesOtherTenantAssignments()
     {
+        // Retired contract: submitting a list used to replace the user's ENTIRE
+        // membership set, so naming only the current tenant deleted every other one.
+        // The inverse is now asserted - the other tenant must survive untouched.
         var user = await PersistAsync(CreateTestUser("alice"));
-        var oldTenant = await PersistAsync(CreateTestTenant("OLD"));
-        var newTenant1 = await PersistAsync(CreateTestTenant("NEW1"));
-        var newTenant2 = await PersistAsync(CreateTestTenant("NEW2"));
+        var current = await PersistAsync(CreateTestTenant("AAA"));
+        var other = await PersistAsync(CreateTestTenant("BBB"));
 
         await PersistAsync(new UserTenant
         {
-            UserId = user.Id, TenantId = oldTenant.Id,
+            UserId = user.Id, TenantId = current.Id,
+            IsDefault = false, IsActive = true, JoinedAt = DateTime.UtcNow
+        });
+        await PersistAsync(new UserTenant
+        {
+            UserId = user.Id, TenantId = other.Id,
             IsDefault = true, IsActive = true, JoinedAt = DateTime.UtcNow
         });
 
-        var request = new AssignTenantsRequest(new[] { newTenant1.Id, newTenant2.Id });
-        var result = await _sut.AssignTenantsAsync(user.Id, request);
+        SetCurrentTenant(current.Id, "AAA");
+
+        var result = await _sut.AssignTenantsAsync(
+            user.Id, new AssignTenantsRequest(new[] { current.Id }));
 
         Assert.True(result.IsSuccess);
         var assigned = await Context.Set<UserTenant>()
@@ -418,14 +499,18 @@ public class UserServiceTests : IdentityServiceTestBase
             .ToListAsync();
 
         Assert.Equal(2, assigned.Count);
-        Assert.Contains(assigned, ut => ut.TenantId == newTenant1.Id && ut.IsDefault);
-        Assert.Contains(assigned, ut => ut.TenantId == newTenant2.Id && !ut.IsDefault);
-        Assert.DoesNotContain(assigned, ut => ut.TenantId == oldTenant.Id);
+        Assert.Contains(assigned, ut => ut.TenantId == current.Id);
+        // The old implementation deleted this row. It must still be here, and still be
+        // the default - the current tenant must not have been promoted.
+        Assert.Contains(assigned, ut => ut.TenantId == other.Id && ut.IsDefault);
     }
 
     [Fact]
-    public async Task AssignTenants_WithEmptyList_ClearsAllAssignments()
+    public async Task AssignTenants_WithEmptyList_ReturnsValidationError_AndChangesNothing()
     {
+        // Retired contract: an empty list used to clear every membership, leaving a
+        // tenant-less identity that no tenant administrator could then see or manage.
+        // Ejection is a separate lifecycle decision, so the request is now refused.
         var user = await PersistAsync(CreateTestUser("alice"));
         var tenant = await PersistAsync(CreateTestTenant("ABC"));
 
@@ -434,14 +519,18 @@ public class UserServiceTests : IdentityServiceTestBase
             UserId = user.Id, TenantId = tenant.Id,
             IsDefault = true, IsActive = true, JoinedAt = DateTime.UtcNow
         });
+        SetCurrentTenant(tenant.Id, "ABC");
 
-        var request = new AssignTenantsRequest(new List<Guid>());
-        var result = await _sut.AssignTenantsAsync(user.Id, request);
+        var result = await _sut.AssignTenantsAsync(
+            user.Id, new AssignTenantsRequest(new List<Guid>()));
 
-        Assert.True(result.IsSuccess);
+        Assert.True(result.IsFailure);
+        Assert.Equal("Tenant.SelectionRequired", result.Error.Code);
+
         var remaining = await Context.Set<UserTenant>()
             .Where(ut => ut.UserId == user.Id)
             .ToListAsync();
-        Assert.Empty(remaining);
+        Assert.Single(remaining);
+        Assert.True(remaining[0].IsDefault);
     }
 }

@@ -25,7 +25,12 @@ public class UsersController : ControllerBase
         return result.IsSuccess ? Ok(result.Value) : BadRequest(new { error = result.Error.Message });
     }
 
+    // Admin-only, like every other action here. Its absence was a confirmed
+    // authorization defect: any authenticated principal — Viewer included — could
+    // read any user by id. Tenant scoping is enforced separately in UserService;
+    // the role gate alone is not sufficient.
     [HttpGet("{id:guid}")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> GetById(Guid id)
     {
         var result = await _userService.GetByIdAsync(id);

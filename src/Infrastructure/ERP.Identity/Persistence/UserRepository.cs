@@ -59,6 +59,54 @@ public sealed class UserRepository : IUserRepository
         return users;
     }
 
+    // ── Tenant-scoped reads (CT-4 authorization remediation, phase P2) ──────────
+    //
+    // Scoping lives in the database query, never in a post-filter over an unscoped
+    // read: a filter applied after the fact still pulls other tenants' rows across
+    // the boundary, and any future caller that forgets it gets everything.
+    //
+    // Membership is expressed as EXISTS rather than a join, so a user who belongs to
+    // several tenants is returned once, not once per membership.
+
+    public Task<AppUser?> GetByIdInTenantWithRolesAsync(
+        Guid id, Guid tenantId, CancellationToken cancellationToken = default)
+        => _context.Set<AppUser>()
+            .AsNoTracking()
+            .Include(u => u.UserRoles.Where(ur => ur.TenantId == tenantId))
+                .ThenInclude(ur => ur.Role)
+            .FirstOrDefaultAsync(
+                u => u.Id == id
+                     && _context.Set<UserTenant>()
+                         .Any(ut => ut.UserId == u.Id && ut.TenantId == tenantId && ut.IsActive),
+                cancellationToken);
+
+    public async Task<IReadOnlyList<AppUser>> GetAllInTenantWithRolesAsync(
+        Guid tenantId, CancellationToken cancellationToken = default)
+        => await _context.Set<AppUser>()
+            .AsNoTracking()
+            .Where(u => _context.Set<UserTenant>()
+                .Any(ut => ut.UserId == u.Id && ut.TenantId == tenantId && ut.IsActive))
+            .Include(u => u.UserRoles.Where(ur => ur.TenantId == tenantId))
+                .ThenInclude(ur => ur.Role)
+            .OrderBy(u => u.UserName)
+            .ToListAsync(cancellationToken);
+
+    public async Task<IReadOnlyList<AppUserRole>> GetUserRoleAssignmentsInTenantAsync(
+        Guid userId, Guid tenantId, CancellationToken cancellationToken = default)
+        => await _context.Set<AppUserRole>()
+            .Include(ur => ur.Role)
+            .Where(ur => ur.UserId == userId && ur.TenantId == tenantId && ur.IsActive)
+            .OrderBy(ur => ur.Role.Name)
+            .ToListAsync(cancellationToken);
+
+    public Task<UserTenant?> GetUserTenantAsync(
+        Guid userId, Guid tenantId, CancellationToken cancellationToken = default)
+        => _context.Set<UserTenant>()
+            .Include(ut => ut.Tenant)
+            .FirstOrDefaultAsync(
+                ut => ut.UserId == userId && ut.TenantId == tenantId && ut.IsActive,
+                cancellationToken);
+
     public async Task<IReadOnlyList<string>> GetPermissionCodesForUserAsync(Guid userId, CancellationToken cancellationToken = default)
     {
         var codes = await _context.Set<AppUserRole>()

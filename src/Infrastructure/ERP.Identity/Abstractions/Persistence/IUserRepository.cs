@@ -44,6 +44,35 @@ public interface IUserRepository
     Task<IReadOnlyList<AppUser>> GetAllWithRolesAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// The user, but only when they are an ACTIVE member of <paramref name="tenantId"/>,
+    /// with their role graph filtered to that same tenant.
+    ///
+    /// Returns null both when the user does not exist and when they exist outside the
+    /// tenant — the caller cannot distinguish the two, which is what keeps the 404
+    /// response from confirming that a foreign id is real.
+    /// </summary>
+    Task<AppUser?> GetByIdInTenantWithRolesAsync(
+        Guid id, Guid tenantId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Every ACTIVE member of <paramref name="tenantId"/>, roles filtered to that tenant.
+    ///
+    /// Membership is applied as an EXISTS subquery in the database, not as an in-memory
+    /// filter over an unscoped read, and not as a join — so a user with memberships in
+    /// several tenants appears exactly once.
+    /// </summary>
+    Task<IReadOnlyList<AppUser>> GetAllInTenantWithRolesAsync(
+        Guid tenantId, CancellationToken cancellationToken = default);
+
+    /// <summary>Active role assignments for one user WITHIN one tenant only.</summary>
+    Task<IReadOnlyList<AppUserRole>> GetUserRoleAssignmentsInTenantAsync(
+        Guid userId, Guid tenantId, CancellationToken cancellationToken = default);
+
+    /// <summary>The user's ACTIVE membership row for one tenant, or null.</summary>
+    Task<UserTenant?> GetUserTenantAsync(
+        Guid userId, Guid tenantId, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Return the distinct set of permission codes that the user currently has,
     /// computed from their active role assignments.
     /// </summary>

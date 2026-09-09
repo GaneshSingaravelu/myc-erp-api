@@ -44,6 +44,12 @@ public sealed class RoleRepository : IRoleRepository
     public Task<bool> ExistsByIdAsync(Guid id, CancellationToken cancellationToken = default)
         => _context.Set<AppRole>().AnyAsync(r => r.Id == id, cancellationToken);
 
+    public Task<bool> ExistsAndIsAssignableInTenantAsync(
+        Guid roleId, Guid tenantId, CancellationToken cancellationToken = default)
+        => _context.Set<AppRole>()
+            .AnyAsync(r => r.Id == roleId && (r.TenantId == null || r.TenantId == tenantId),
+                cancellationToken);
+
     public Task<bool> ExistsByNameAsync(string name, CancellationToken cancellationToken = default)
         => _context.Set<AppRole>().AnyAsync(r => r.Name == name, cancellationToken);
 
