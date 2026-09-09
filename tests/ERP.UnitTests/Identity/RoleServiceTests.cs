@@ -15,7 +15,7 @@ public class RoleServiceTests : IdentityServiceTestBase
 
     public RoleServiceTests()
     {
-        _sut = new RoleService(Roles, Permissions, UnitOfWork);
+        _sut = new RoleService(Roles, Permissions, UnitOfWork, TenantProvider);
     }
 
     // ── GetByIdAsync ──

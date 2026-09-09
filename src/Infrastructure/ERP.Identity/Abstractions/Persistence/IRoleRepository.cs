@@ -31,6 +31,30 @@ public interface IRoleRepository
     /// <summary>List all roles with RolePermissions → Permission eager-loaded, ordered by Name.</summary>
     Task<IReadOnlyList<AppRole>> GetAllWithPermissionsAsync(CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// List the roles visible inside <paramref name="tenantId"/>, with RolePermissions →
+    /// Permission eager-loaded, ordered by Name.
+    ///
+    /// <para>Visible means the same thing here as assignable does in
+    /// <see cref="ExistsAndIsAssignableInTenantAsync"/>: a system role (TenantId null,
+    /// available to every tenant) or a role owned by this tenant. A role owned by another
+    /// tenant is never returned.</para>
+    /// </summary>
+    Task<IReadOnlyList<AppRole>> GetAllAssignableInTenantWithPermissionsAsync(
+        Guid tenantId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Find a role by id, but only if it is visible inside <paramref name="tenantId"/> —
+    /// a system role or one owned by this tenant — with RolePermissions → Permission
+    /// eager-loaded.
+    ///
+    /// <para>Returns null for a role owned by another tenant, exactly as it does for an id
+    /// that does not exist, so the caller cannot tell the two apart and foreign role
+    /// existence is not disclosed.</para>
+    /// </summary>
+    Task<AppRole?> GetByIdAssignableInTenantWithPermissionsAsync(
+        Guid id, Guid tenantId, CancellationToken cancellationToken = default);
+
     /// <summary>Check whether a role with the given id exists.</summary>
     Task<bool> ExistsByIdAsync(Guid id, CancellationToken cancellationToken = default);
 
