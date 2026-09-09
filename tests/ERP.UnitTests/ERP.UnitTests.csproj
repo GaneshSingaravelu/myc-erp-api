@@ -26,6 +26,10 @@
     <ProjectReference Include="..\..\src\Core\ERP.Application.Abstractions\ERP.Application.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\Infrastructure\ERP.Persistence\ERP.Persistence.csproj" />
     <ProjectReference Include="..\..\src\Infrastructure\ERP.Identity\ERP.Identity.csproj" />
+    <!-- Host reference: the role DELETE withdrawal is a contract of the controller itself.
+         Asserting it needs the controller, not the service beneath it — the whole point of
+         the withdrawal being that no service is reached at all. -->
+    <ProjectReference Include="..\..\src\Host\ERP.Api\ERP.Api.csproj" />
   </ItemGroup>
 
 </Project>

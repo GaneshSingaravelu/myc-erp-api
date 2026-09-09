@@ -62,12 +62,23 @@ public class RolesController : ControllerBase
         };
     }
 
+    /// <summary>
+    /// Role deletion is withdrawn, not tenant-scoped.
+    ///
+    /// <para>The service primitive behind it deletes by raw id with no tenant check, and
+    /// AppRole is auditable while AppUserRole and AppRolePermission are not — so a delete is
+    /// converted to a soft delete that no cascade follows, leaving assignment and permission
+    /// rows pointing at a role that queries no longer return. Users silently lose what the
+    /// role granted while the junction rows still claim they hold it. Defining a correct
+    /// lifecycle for that is a separate decision, so the capability is withdrawn rather than
+    /// redefined.</para>
+    ///
+    /// <para>The answer is a constant. Nothing is looked up, so this endpoint cannot be used
+    /// to learn whether a given id names a real role in some other tenant.</para>
+    /// </summary>
     [HttpDelete("{id:guid}")]
-    public async Task<IActionResult> Delete(Guid id)
-    {
-        var result = await _roleService.DeleteAsync(id);
-        return result.IsSuccess ? NoContent() : BadRequest(new { error = result.Error.Message });
-    }
+    public IActionResult Delete(Guid id)
+        => StatusCode(405, new { error = "Deleting roles is not supported." });
 
     [HttpPost("{id:guid}/permissions")]
     public async Task<IActionResult> AssignPermissions(Guid id, [FromBody] AssignPermissionsRequest request)
