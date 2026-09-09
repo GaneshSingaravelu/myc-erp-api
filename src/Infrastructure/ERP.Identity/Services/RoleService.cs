@@ -58,6 +58,38 @@ public class RoleService : IRoleService
     private Guid CurrentTenantId => _tenantProvider.GetCurrentTenant().Id;
 
     /// <summary>
+    /// Why a write against <paramref name="role"/> must be refused, or null when it may
+    /// proceed. <paramref name="role"/> has already been narrowed to the VISIBILITY boundary,
+    /// so anything non-null here is either a system role, an unowned legacy role, or a role
+    /// this tenant owns.
+    ///
+    /// <para>Order matters. IsSystemRole is checked first because protection is independent
+    /// of ownership: a system role is immutable whether its TenantId is null or this tenant's.
+    /// Only then does ownership decide, and a null TenantId at that point is the legacy
+    /// TenantId-null / IsSystemRole-false shape that no tenant owns — visible to everyone,
+    /// writable by no one, until the role data reconciliation decision is taken. Assigning it
+    /// an owner here would be inventing ownership.</para>
+    ///
+    /// <para>A null role yields NotFound, which is also the answer for a role belonging to
+    /// another tenant — the visibility query already made the two indistinguishable.</para>
+    /// </summary>
+    private static Error? MutationRefusalFor(AppRole? role, Guid id)
+    {
+        if (role is null)
+            return Error.NotFound("Role", id);
+
+        if (role.IsSystemRole)
+            return Error.Validation("Role.SystemRole", "System roles cannot be modified.");
+
+        if (role.TenantId is null)
+            return Error.Validation(
+                "Role.UnownedRole",
+                "This role is not owned by any tenant and cannot be modified.");
+
+        return null;
+    }
+
+    /// <summary>
     /// Read one role that is visible in the current tenant — a system role, or one this
     /// tenant owns.
     ///
@@ -67,7 +99,7 @@ public class RoleService : IRoleService
     /// </summary>
     public async Task<Result<RoleDto>> GetByIdAsync(Guid id)
     {
-        var role = await _roles.GetByIdAssignableInTenantWithPermissionsAsync(id, CurrentTenantId);
+        var role = await _roles.GetByIdVisibleInTenantWithPermissionsAsync(id, CurrentTenantId);
 
         if (role is null)
             return Result.Failure<RoleDto>(Error.NotFound("Role", id));
@@ -81,7 +113,7 @@ public class RoleService : IRoleService
     /// </summary>
     public async Task<Result<IReadOnlyList<RoleDto>>> GetAllAsync()
     {
-        var roles = await _roles.GetAllAssignableInTenantWithPermissionsAsync(CurrentTenantId);
+        var roles = await _roles.GetAllVisibleInTenantWithPermissionsAsync(CurrentTenantId);
         return Result.Success<IReadOnlyList<RoleDto>>(roles.Select(MapToDto).ToList());
     }
 
@@ -103,17 +135,23 @@ public class RoleService : IRoleService
         return Result.Success(MapToDto(role));
     }
 
+    /// <summary>
+    /// Update a role the current tenant owns. Name and description only — ownership and
+    /// system-role protection are not part of the update contract and are never written here.
+    /// </summary>
     public async Task<Result<RoleDto>> UpdateAsync(Guid id, UpdateRoleRequest request)
     {
-        var role = await _roles.GetByIdWithPermissionsAsync(id);
+        var role = await _roles.GetTrackedByIdVisibleInTenantAsync(id, CurrentTenantId);
 
-        if (role is null)
-            return Result.Failure<RoleDto>(Error.NotFound("Role", id));
+        var refusal = MutationRefusalFor(role, id);
+        if (refusal is not null)
+            return Result.Failure<RoleDto>(refusal);
 
-        if (role.IsSystemRole)
-            return Result.Failure<RoleDto>(Error.Validation("Role.SystemRole", "System roles cannot be modified."));
+        // Authorised. The permission graph is only needed to shape the response, so it is
+        // fetched now rather than being in hand while the decision was still open.
+        await _roles.LoadRolePermissionsAsync(role!);
 
-        role.Name = request.Name;
+        role!.Name = request.Name;
         role.Description = request.Description;
         await _uow.SaveChangesAsync();
 
@@ -135,25 +173,44 @@ public class RoleService : IRoleService
         return Result.Success();
     }
 
+    /// <summary>
+    /// Replace the permission set of a role the current tenant owns.
+    ///
+    /// <para>The step order is the security property, not a style choice. Replacement is
+    /// destructive and unrecoverable from the caller's side, so nothing is removed until the
+    /// caller is known to be entitled to the role AND every requested permission id has been
+    /// checked. Previously the clear-then-validate order meant an unknown id could leave the
+    /// staged set half-rewritten, and no ownership check ran at all.</para>
+    /// </summary>
     public async Task<Result> AssignPermissionsAsync(Guid roleId, AssignPermissionsRequest request)
     {
-        var role = await _roles.GetByIdForPermissionAssignmentAsync(roleId);
+        // 1-2. Current tenant, then the role narrowed to what this tenant may see.
+        var role = await _roles.GetTrackedByIdVisibleInTenantAsync(roleId, CurrentTenantId);
 
-        if (role is null)
-            return Result.Failure(Error.NotFound("Role", roleId));
+        // 3. Missing, foreign, system and unowned all stop here — before any mutation.
+        var refusal = MutationRefusalFor(role, roleId);
+        if (refusal is not null)
+            return Result.Failure(refusal);
 
-        // Remove existing permissions
-        _roles.RemoveRolePermissions(role.RolePermissions);
-
-        // Add new permissions
+        // 4. Every requested permission must exist before the old set is touched, so a bad
+        //    id cannot leave a partially rewritten set behind. Permissions are global
+        //    catalogue data and carry no tenant dimension.
         foreach (var permissionId in request.PermissionIds)
         {
             if (!await _permissions.ExistsByIdAsync(permissionId))
                 return Result.Failure(Error.NotFound("Permission", permissionId));
-
-            role.RolePermissions.Add(new AppRolePermission { RoleId = roleId, PermissionId = permissionId });
         }
 
+        // 5. Authorised and validated — only now does the destructive graph get loaded.
+        await _roles.LoadRolePermissionsAsync(role!);
+
+        // 6. Replace.
+        _roles.RemoveRolePermissions(role!.RolePermissions);
+
+        foreach (var permissionId in request.PermissionIds)
+            role.RolePermissions.Add(new AppRolePermission { RoleId = roleId, PermissionId = permissionId });
+
+        // 7. One commit.
         await _uow.SaveChangesAsync();
         return Result.Success();
     }

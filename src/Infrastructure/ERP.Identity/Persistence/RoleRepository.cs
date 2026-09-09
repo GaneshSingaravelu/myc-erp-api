@@ -41,7 +41,7 @@ public sealed class RoleRepository : IRoleRepository
         return roles;
     }
 
-    public async Task<IReadOnlyList<AppRole>> GetAllAssignableInTenantWithPermissionsAsync(
+    public async Task<IReadOnlyList<AppRole>> GetAllVisibleInTenantWithPermissionsAsync(
         Guid tenantId, CancellationToken cancellationToken = default)
     {
         // AsNoTracking: this is a pure projection path — RoleService maps straight to a DTO
@@ -60,7 +60,7 @@ public sealed class RoleRepository : IRoleRepository
         return roles;
     }
 
-    public Task<AppRole?> GetByIdAssignableInTenantWithPermissionsAsync(
+    public Task<AppRole?> GetByIdVisibleInTenantWithPermissionsAsync(
         Guid id, Guid tenantId, CancellationToken cancellationToken = default)
         // The tenant predicate sits in the same WHERE as the id, so the database never
         // returns a foreign tenant's role for us to filter out afterwards.
@@ -71,6 +71,22 @@ public sealed class RoleRepository : IRoleRepository
             .FirstOrDefaultAsync(
                 r => r.Id == id && (r.TenantId == null || r.TenantId == tenantId),
                 cancellationToken);
+
+    public Task<AppRole?> GetTrackedByIdVisibleInTenantAsync(
+        Guid id, Guid tenantId, CancellationToken cancellationToken = default)
+        // Tracked on purpose — the caller writes to what comes back. No AsNoTracking, and no
+        // Include: the permission graph is loaded separately, after authorization.
+        => _context.Set<AppRole>()
+            .FirstOrDefaultAsync(
+                r => r.Id == id && (r.TenantId == null || r.TenantId == tenantId),
+                cancellationToken);
+
+    public Task LoadRolePermissionsAsync(AppRole role, CancellationToken cancellationToken = default)
+        => _context.Entry(role)
+            .Collection(r => r.RolePermissions)
+            .Query()
+            .Include(rp => rp.Permission)
+            .LoadAsync(cancellationToken);
 
     public Task<bool> ExistsByIdAsync(Guid id, CancellationToken cancellationToken = default)
         => _context.Set<AppRole>().AnyAsync(r => r.Id == id, cancellationToken);

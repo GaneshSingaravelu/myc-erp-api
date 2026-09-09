@@ -109,7 +109,14 @@ public class RoleServiceTests : IdentityServiceTestBase
     [Fact]
     public async Task Update_WhenCustomRole_PersistsChanges()
     {
-        var role = await PersistAsync(CreateTestRole("QA Lead", isSystemRole: false));
+        // Now needs an owning tenant: since S-A2 a role belongs to the current tenant or it
+        // is not writable, so the historical TenantId-null fixture would be refused as
+        // Role.UnownedRole rather than updated.
+        var tenant = await PersistAsync(CreateTestTenant("ABC"));
+        var role = CreateTestRole("QA Lead", isSystemRole: false);
+        role.TenantId = tenant.Id;
+        await PersistAsync(role);
+        SetCurrentTenant(tenant.Id, "ABC");
 
         var result = await _sut.UpdateAsync(role.Id, new UpdateRoleRequest("QA Manager", "Manages QA"));
 
@@ -161,7 +168,14 @@ public class RoleServiceTests : IdentityServiceTestBase
     [Fact]
     public async Task AssignPermissions_WhenPermissionMissing_ReturnsNotFound()
     {
-        var role = await PersistAsync(CreateTestRole("Admin"));
+        // Ownership is established first now, so this fixture must be a role the current
+        // tenant owns — otherwise the request is refused before permission validation runs.
+        var tenant = await PersistAsync(CreateTestTenant("ABC"));
+        var role = CreateTestRole("Admin");
+        role.TenantId = tenant.Id;
+        await PersistAsync(role);
+        SetCurrentTenant(tenant.Id, "ABC");
+
         var request = new AssignPermissionsRequest(new[] { Guid.NewGuid() });
 
         var result = await _sut.AssignPermissionsAsync(role.Id, request);
@@ -173,7 +187,12 @@ public class RoleServiceTests : IdentityServiceTestBase
     [Fact]
     public async Task AssignPermissions_ReplacesExistingAssignments()
     {
-        var role = await PersistAsync(CreateTestRole("Admin"));
+        var tenant = await PersistAsync(CreateTestTenant("ABC"));
+        var role = CreateTestRole("Admin");
+        role.TenantId = tenant.Id;
+        await PersistAsync(role);
+        SetCurrentTenant(tenant.Id, "ABC");
+
         var oldPerm = await PersistAsync(CreateTestPermission("OLD_PERM"));
         var newPerm1 = await PersistAsync(CreateTestPermission("JOBCARD_CREATE"));
         var newPerm2 = await PersistAsync(CreateTestPermission("JOBCARD_APPROVE"));
