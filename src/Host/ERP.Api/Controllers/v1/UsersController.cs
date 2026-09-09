@@ -57,13 +57,35 @@ public class UsersController : ControllerBase
         return result.IsSuccess ? Ok(result.Value) : NotFound(new { error = result.Error.Message });
     }
 
+    /// <summary>
+    /// Deleting users is not available through this API.
+    ///
+    /// <para>The underlying operation soft-deletes the GLOBAL identity: the AppUser row
+    /// is flagged deleted and a global query filter then hides it from every tenant,
+    /// while its UserTenant and AppUserRole rows are left behind. A tenant
+    /// administrator invoking it therefore removes the user from tenants they have no
+    /// authority over. Every other operation on this controller is scoped to the
+    /// caller's tenant; this one never was.</para>
+    ///
+    /// <para>Removing a user from a single tenant is the operation this endpoint
+    /// should probably express, but doing that safely also requires deciding what
+    /// happens to the last membership, how an ejected identity is recovered, and how
+    /// an already-issued token is revoked — none of which exist yet. Rather than ship
+    /// either an unsafe global delete or a silently redefined one, the capability is
+    /// withdrawn until that lifecycle is designed.</para>
+    ///
+    /// <para>The route is kept so callers get a deterministic, explained refusal
+    /// instead of the framework's empty automatic 405. The Admin requirement is kept
+    /// too: authorization still runs first, so a non-Admin is rejected before reaching
+    /// this action rather than being told the operation does not exist.</para>
+    ///
+    /// <para>The response is identical for a real id and an unknown one. Probing the
+    /// target would turn a disabled endpoint into an existence oracle.</para>
+    /// </summary>
     [HttpDelete("{id:guid}")]
     [Authorize(Roles = "Admin")]
-    public async Task<IActionResult> Delete(Guid id)
-    {
-        var result = await _userService.DeleteAsync(id);
-        return result.IsSuccess ? NoContent() : NotFound(new { error = result.Error.Message });
-    }
+    public IActionResult Delete(Guid id)
+        => StatusCode(405, new { error = "Deleting users is not supported." });
 
     [HttpPost("{id:guid}/roles")]
     [Authorize(Roles = "Admin")]
