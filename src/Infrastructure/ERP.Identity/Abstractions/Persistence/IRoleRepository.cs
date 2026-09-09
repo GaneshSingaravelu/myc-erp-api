@@ -97,8 +97,26 @@ public interface IRoleRepository
     Task<bool> ExistsAndIsAssignableInTenantAsync(
         Guid roleId, Guid tenantId, CancellationToken cancellationToken = default);
 
-    /// <summary>Check whether a role with the given (case-sensitive) name exists.</summary>
-    Task<bool> ExistsByNameAsync(string name, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Whether a role with this normalized name already exists within reach of
+    /// <paramref name="tenantId"/> — meaning owned by that tenant, or global.
+    ///
+    /// <para>Deliberately stricter than the database's unique index on
+    /// (NormalizedName, TenantId). That index would happily allow a tenant to create its own
+    /// "Admin" alongside the global one, because null and a tenant id are different index
+    /// entries. Two roles of the same name both visible in one tenant is ambiguous to every
+    /// human reading a role list, so the global arm is included here.</para>
+    ///
+    /// <para><paramref name="excludeRoleId"/> is required rather than optional so each caller
+    /// states its intent: null when creating, and the role's own id when renaming, so a role
+    /// is never reported as conflicting with itself. Passing the wrong one is a visible
+    /// mistake at the call site instead of a silent default.</para>
+    /// </summary>
+    Task<bool> ExistsByNormalizedNameInTenantOrGlobalAsync(
+        string normalizedName,
+        Guid tenantId,
+        Guid? excludeRoleId,
+        CancellationToken cancellationToken = default);
 
     /// <summary>Stage a new role for insertion.</summary>
     Task AddAsync(AppRole role, CancellationToken cancellationToken = default);

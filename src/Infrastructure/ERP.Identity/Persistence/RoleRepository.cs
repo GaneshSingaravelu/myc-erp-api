@@ -97,8 +97,18 @@ public sealed class RoleRepository : IRoleRepository
             .AnyAsync(r => r.Id == roleId && (r.TenantId == null || r.TenantId == tenantId),
                 cancellationToken);
 
-    public Task<bool> ExistsByNameAsync(string name, CancellationToken cancellationToken = default)
-        => _context.Set<AppRole>().AnyAsync(r => r.Name == name, cancellationToken);
+    public Task<bool> ExistsByNormalizedNameInTenantOrGlobalAsync(
+        string normalizedName,
+        Guid tenantId,
+        Guid? excludeRoleId,
+        CancellationToken cancellationToken = default)
+        // Every arm is part of one database predicate — nothing is fetched and compared here.
+        => _context.Set<AppRole>()
+            .AnyAsync(
+                r => r.NormalizedName == normalizedName
+                     && (r.TenantId == null || r.TenantId == tenantId)
+                     && (excludeRoleId == null || r.Id != excludeRoleId),
+                cancellationToken);
 
     public async Task AddAsync(AppRole role, CancellationToken cancellationToken = default)
         => await _context.Set<AppRole>().AddAsync(role, cancellationToken);

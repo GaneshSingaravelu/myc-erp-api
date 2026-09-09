@@ -58,6 +58,18 @@ public class RoleService : IRoleService
     private Guid CurrentTenantId => _tenantProvider.GetCurrentTenant().Id;
 
     /// <summary>
+    /// The canonical normalized form of a role name.
+    ///
+    /// <para>ToUpperInvariant, matching what <c>IdentitySeeder</c> already writes for the
+    /// seeded roles and how AppUser normalizes its user name and email. The value only has
+    /// meaning if every writer agrees on it: a second convention here — trimming, a
+    /// culture-sensitive uppercase, slugging — would silently stop matching the rows the
+    /// seeder produced. Whitespace is deliberately left alone; that is request validation's
+    /// job and no such validation exists today.</para>
+    /// </summary>
+    private static string NormalizeRoleName(string name) => name.ToUpperInvariant();
+
+    /// <summary>
     /// Why a write against <paramref name="role"/> must be refused, or null when it may
     /// proceed. <paramref name="role"/> has already been narrowed to the VISIBILITY boundary,
     /// so anything non-null here is either a system role, an unowned legacy role, or a role
@@ -117,16 +129,34 @@ public class RoleService : IRoleService
         return Result.Success<IReadOnlyList<RoleDto>>(roles.Select(MapToDto).ToList());
     }
 
+    /// <summary>
+    /// Create a custom role owned by the current tenant.
+    ///
+    /// <para>Ownership and protection are set here, never taken from the request: the role
+    /// belongs to the calling tenant and is not a system role. CreateRoleRequest carries only
+    /// a name and description, so there is no field a caller could use to ask for a global
+    /// role or a protected one.</para>
+    ///
+    /// <para>NormalizedName is written too. It used to be left at its empty-string default,
+    /// which meant every role created through this endpoint shared the same
+    /// (NormalizedName, TenantId) index entry and the second one failed at the database.</para>
+    /// </summary>
     public async Task<Result<RoleDto>> CreateAsync(CreateRoleRequest request)
     {
-        if (await _roles.ExistsByNameAsync(request.Name))
+        var tenantId = CurrentTenantId;
+        var normalizedName = NormalizeRoleName(request.Name);
+
+        if (await _roles.ExistsByNormalizedNameInTenantOrGlobalAsync(
+                normalizedName, tenantId, excludeRoleId: null))
             return Result.Failure<RoleDto>(Error.Conflict("Role.NameExists", $"Role '{request.Name}' already exists."));
 
         var role = new AppRole
         {
             Name = request.Name,
+            NormalizedName = normalizedName,
             Description = request.Description,
-            IsSystemRole = false
+            IsSystemRole = false,
+            TenantId = tenantId
         };
 
         await _roles.AddAsync(role);
@@ -147,11 +177,25 @@ public class RoleService : IRoleService
         if (refusal is not null)
             return Result.Failure<RoleDto>(refusal);
 
+        // Uniqueness is checked only after authorization succeeded. Running it first would
+        // let a caller learn, from a conflict answer, that some role they are not entitled to
+        // see holds a given name.
+        //
+        // The role excludes itself, so renaming "Floor Manager" to "floor manager" — same
+        // normalized value, same role — is not a conflict with itself.
+        var normalizedName = NormalizeRoleName(request.Name);
+        if (await _roles.ExistsByNormalizedNameInTenantOrGlobalAsync(
+                normalizedName, CurrentTenantId, excludeRoleId: role!.Id))
+            return Result.Failure<RoleDto>(Error.Conflict("Role.NameExists", $"Role '{request.Name}' already exists."));
+
         // Authorised. The permission graph is only needed to shape the response, so it is
         // fetched now rather than being in hand while the decision was still open.
-        await _roles.LoadRolePermissionsAsync(role!);
+        await _roles.LoadRolePermissionsAsync(role);
 
-        role!.Name = request.Name;
+        role.Name = request.Name;
+        // Written together with Name, always. Leaving it stale was what let a renamed role
+        // keep matching its old name in every normalized lookup.
+        role.NormalizedName = normalizedName;
         role.Description = request.Description;
         await _uow.SaveChangesAsync();
 

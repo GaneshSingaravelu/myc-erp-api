@@ -54,9 +54,12 @@ public class RolesController : ControllerBase
         if (result.IsSuccess)
             return Ok(result.Value);
 
-        return result.Error.Code == "Role.NotFound"
-            ? NotFound(new { error = result.Error.Message })
-            : BadRequest(new { error = result.Error.Message });
+        return result.Error.Code switch
+        {
+            "Role.NotFound" => NotFound(new { error = result.Error.Message }),
+            "Role.NameExists" => Conflict(new { error = result.Error.Message }),
+            _ => BadRequest(new { error = result.Error.Message })
+        };
     }
 
     [HttpDelete("{id:guid}")]
