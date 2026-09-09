@@ -1,4 +1,6 @@
 using ERP.Application.Abstractions.Identity.Contracts;
+using Moq;
+using ERP.Application.Abstractions.MultiTenancy;
 using ERP.Identity.Entities;
 using ERP.Identity.Services;
 using Microsoft.EntityFrameworkCore;
@@ -23,7 +25,7 @@ public class UserService_AssignRolesRelationalTests : RelationalIdentityTestBase
 
     public UserService_AssignRolesRelationalTests()
     {
-        _sut = new UserService(Users, Roles, Tenants, UnitOfWork);
+        _sut = new UserService(Users, Roles, Tenants, UnitOfWork, TenantProvider);
     }
 
     /// <summary>Seeds a user, two tenants with membership in both, and three roles.</summary>
@@ -34,6 +36,12 @@ public class UserService_AssignRolesRelationalTests : RelationalIdentityTestBase
         var tenantB = await PersistAsync(CreateTestTenant("BBB"));
         await PersistAsync(CreateMembership(user.Id, tenantA.Id));
         await PersistAsync(CreateMembership(user.Id, tenantB.Id));
+
+        // Role assignment now has an actor gate: the body's tenantId must match the
+        // tenant the caller is authenticated for. These tests act as a Tenant A
+        // administrator, so the context is set here rather than in every test.
+        SetCurrentTenant(tenantA.Id, "AAA");
+
         return (user, tenantA, tenantB);
     }
 
@@ -185,8 +193,14 @@ public class UserService_AssignRolesRelationalTests : RelationalIdentityTestBase
         var (user, tenantA, tenantB) = await SeedAsync();
         var admin = await PersistAsync(CreateTestRole("Admin"));
 
+        // One administrator can no longer write into both tenants in a single flow —
+        // the actor gate forbids it. Two tenants means two authenticated contexts,
+        // which is what really happens in production. The data property under test is
+        // unchanged: the same role may coexist for one user in two tenants.
         Assert.True((await _sut.AssignRolesAsync(
             user.Id, new AssignRolesRequest(tenantA.Id, new[] { admin.Id }))).IsSuccess);
+
+        SetCurrentTenant(tenantB.Id, "BBB");
         Assert.True((await _sut.AssignRolesAsync(
             user.Id, new AssignRolesRequest(tenantB.Id, new[] { admin.Id }))).IsSuccess);
 

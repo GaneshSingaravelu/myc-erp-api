@@ -1,4 +1,5 @@
 using ERP.Application.Abstractions.Identity;
+using ERP.Application.Abstractions.MultiTenancy;
 using ERP.Identity.Entities;
 using ERP.Identity.Persistence;
 using ERP.Persistence.Context;
@@ -34,6 +35,32 @@ public abstract class IdentityServiceTestBase : IDisposable
     protected readonly FeatureFlagRepository FeatureFlags;
     protected readonly TenantRepository Tenants;
     protected readonly MasterUnitOfWork UnitOfWork;
+
+    /// <summary>
+    /// Validated current tenant for services that make tenant authorization
+    /// decisions. Mirrors what TenantMiddleware supplies at runtime. Tests that
+    /// exercise tenant scoping override <see cref="SetCurrentTenant"/>.
+    /// </summary>
+    private readonly Mock<ITenantProvider> _tenantProviderMock = CreateTenantProviderMock();
+    protected ITenantProvider TenantProvider => _tenantProviderMock.Object;
+
+    /// <summary>An active (or deliberately inactive) tenant membership row.</summary>
+    protected static UserTenant CreateMembership(Guid userId, Guid tenantId, bool isActive = true) =>
+        new() { UserId = userId, TenantId = tenantId, IsActive = isActive };
+
+    private static Mock<ITenantProvider> CreateTenantProviderMock()
+    {
+        var mock = new Mock<ITenantProvider>();
+        mock.Setup(p => p.GetCurrentTenant())
+            .Returns(new TenantInfo { Id = Guid.Empty, Identifier = "test-tenant", IsActive = true });
+        return mock;
+    }
+
+    /// <summary>Point the validated tenant context at a specific tenant.</summary>
+    protected void SetCurrentTenant(Guid tenantId, string identifier = "test-tenant")
+        => _tenantProviderMock
+            .Setup(p => p.GetCurrentTenant())
+            .Returns(new TenantInfo { Id = tenantId, Identifier = identifier, IsActive = true });
 
     /// <summary>
     /// One-time, thread-safe registration of Identity entity configurations.

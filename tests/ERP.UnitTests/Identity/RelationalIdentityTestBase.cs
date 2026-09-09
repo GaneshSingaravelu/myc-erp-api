@@ -1,4 +1,5 @@
 using ERP.Application.Abstractions.Identity;
+using ERP.Application.Abstractions.MultiTenancy;
 using ERP.Identity.Entities;
 using ERP.Identity.Persistence;
 using ERP.Persistence.Context;
@@ -43,6 +44,28 @@ public abstract class RelationalIdentityTestBase : IDisposable
     protected readonly RoleRepository Roles;
     protected readonly TenantRepository Tenants;
     protected readonly MasterUnitOfWork UnitOfWork;
+
+    /// <summary>
+    /// Validated current tenant for services that make tenant authorization
+    /// decisions. Mirrors what TenantMiddleware supplies at runtime. Tests that
+    /// exercise tenant scoping override <see cref="SetCurrentTenant"/>.
+    /// </summary>
+    private readonly Mock<ITenantProvider> _tenantProviderMock = CreateTenantProviderMock();
+    protected ITenantProvider TenantProvider => _tenantProviderMock.Object;
+
+    private static Mock<ITenantProvider> CreateTenantProviderMock()
+    {
+        var mock = new Mock<ITenantProvider>();
+        mock.Setup(p => p.GetCurrentTenant())
+            .Returns(new TenantInfo { Id = Guid.Empty, Identifier = "test-tenant", IsActive = true });
+        return mock;
+    }
+
+    /// <summary>Point the validated tenant context at a specific tenant.</summary>
+    protected void SetCurrentTenant(Guid tenantId, string identifier = "test-tenant")
+        => _tenantProviderMock
+            .Setup(p => p.GetCurrentTenant())
+            .Returns(new TenantInfo { Id = tenantId, Identifier = identifier, IsActive = true });
 
     /// <summary>
     /// One-time, thread-safe registration of the Identity entity configurations,
