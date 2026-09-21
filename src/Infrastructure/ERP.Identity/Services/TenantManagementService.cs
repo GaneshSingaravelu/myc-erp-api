@@ -61,8 +61,9 @@ public class TenantManagementService : ITenantManagementService
     /// validated tenant is present, so code that reaches this without tenant resolution
     /// raises an error instead of running an unscoped query.</para>
     ///
-    /// <para>Consulted by <see cref="GetByIdAsync"/> (phase S-T2B). <see cref="GetAllAsync"/>
-    /// and <see cref="UpdateAsync"/> still run unscoped and are addressed in later phases.</para>
+    /// <para>Consulted by <see cref="GetByIdAsync"/> (phase S-T2B) and
+    /// <see cref="GetAllAsync"/> (phase S-T2C). <see cref="UpdateAsync"/> still runs
+    /// unscoped and is addressed in a later phase.</para>
     /// </summary>
     private Guid CurrentTenantId => _tenantProvider.GetCurrentTenant().Id;
 
@@ -122,19 +123,42 @@ public class TenantManagementService : ITenantManagementService
         return Result.Success(MapToResponse(tenant, tenant.UserTenants.Count));
     }
 
+    /// <summary>
+    /// List the tenants visible to the caller — which, under the authorization model this
+    /// application actually has, is exactly the one tenant they are signed in to.
+    ///
+    /// <para>This previously returned every tenant on the platform, so any tenant's Admin
+    /// could enumerate the entire customer list. The fix is not to filter that list: it is
+    /// never requested. Only <c>CurrentTenantId</c> is queried, so no other tenant's row is
+    /// read at all — there is nothing to leak through timing, counts or error shape.</para>
+    ///
+    /// <para>The endpoint stays a collection and keeps its contract; it simply yields zero or
+    /// one item. Zero is a <b>success</b>, not an error. <c>TenantMiddleware</c> has already
+    /// resolved and validated the tenant by the time this runs, so a missing row means the
+    /// store and the middleware's 30-minute cache have diverged — a tenant deleted mid-window.
+    /// Reporting "nothing visible" is honest and discloses nothing, whereas failing would turn
+    /// a stale-cache anomaly into a 400. A missing tenant <i>context</i> is a different matter
+    /// and still fails closed through <see cref="ITenantProvider"/>.</para>
+    ///
+    /// <para>Ordering is no longer meaningful here at zero or one item. The repository's
+    /// <c>GetAllAsync</c> still orders by name for any future caller; this one no longer calls it.</para>
+    /// </summary>
     public async Task<Result<IReadOnlyList<TenantListResponse>>> GetAllAsync()
     {
-        var tenants = await _tenants.GetAllAsync();
+        var tenant = await _tenants.GetByIdAsync(CurrentTenantId);
 
-        var dtos = tenants
-            .Select(t => new TenantListResponse(
-                t.Id,
-                t.Code,
-                t.Name,
-                t.DbProvider,
-                t.IsActive,
-                t.CreatedAt))
-            .ToList();
+        var dtos = new List<TenantListResponse>();
+
+        if (tenant is not null)
+        {
+            dtos.Add(new TenantListResponse(
+                tenant.Id,
+                tenant.Code,
+                tenant.Name,
+                tenant.DbProvider,
+                tenant.IsActive,
+                tenant.CreatedAt));
+        }
 
         return Result.Success<IReadOnlyList<TenantListResponse>>(dtos);
     }

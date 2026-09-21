@@ -240,4 +240,88 @@ public class TenantManagementService_TenantScopedReadTests
         // Strict mock: SaveChangesAsync has no setup, so any commit would already have thrown.
         _uow.VerifyNoOtherCalls();
     }
+
+    // ── S-T2C: GET /tenants is the caller's own tenant, or nothing ───────────
+    //
+    // The list previously returned every tenant on the platform. The property under test is
+    // not "the others are filtered out" but "the others are never requested": the strict
+    // repository mock has no setup for GetAllAsync, so a platform-wide read throws instead
+    // of quietly succeeding.
+
+    [Fact]
+    public async Task List_ReturnsOnlyTheCurrentTenant_FullyMapped()
+    {
+        SetCurrentTenant(TenantA);
+        _tenants
+            .Setup(r => r.GetByIdAsync(TenantA, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TenantRow(TenantA, "ACME"));
+
+        var result = await Sut().GetAllAsync();
+
+        Assert.True(result.IsSuccess);
+        var only = Assert.Single(result.Value);
+        Assert.Equal(TenantA, only.Id);
+        Assert.Equal("ACME", only.Code);
+        Assert.Equal("ACME Manufacturing", only.Name);
+        Assert.Equal("SqlServer", only.DbProvider);
+        Assert.True(only.IsActive);
+        Assert.Equal(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc), only.CreatedAt);
+
+        _tenants.Verify(r => r.GetByIdAsync(TenantA, It.IsAny<CancellationToken>()), Times.Once);
+        _uow.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task List_NeverIssuesAPlatformWideRead()
+    {
+        // No setup for GetAllAsync anywhere in this fixture, and the mock is strict — so if
+        // the service ever reverted to loading every tenant and filtering, this throws.
+        // Other tenants are deliberately NOT seeded: proving they are filtered would be a
+        // weaker claim than proving they are never asked for.
+        SetCurrentTenant(TenantA);
+        _tenants
+            .Setup(r => r.GetByIdAsync(TenantA, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TenantRow(TenantA, "ACME"));
+
+        await Sut().GetAllAsync();
+
+        _tenants.Verify(r => r.GetAllAsync(It.IsAny<CancellationToken>()), Times.Never);
+        _tenants.Verify(r => r.GetByIdAsync(TenantA, It.IsAny<CancellationToken>()), Times.Once);
+        _tenants.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task List_WhenCurrentTenantIsAbsentFromTheStore_IsAnEmptySuccess()
+    {
+        // TenantMiddleware already validated the tenant, so a missing row means the store and
+        // the middleware's 30-minute cache have diverged. That is reported as "nothing
+        // visible", not as an error — failing would turn a stale-cache anomaly into a 400.
+        SetCurrentTenant(TenantA);
+        _tenants
+            .Setup(r => r.GetByIdAsync(TenantA, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Tenant?)null);
+
+        var result = await Sut().GetAllAsync();
+
+        Assert.True(result.IsSuccess);
+        Assert.Empty(result.Value);
+        _tenants.Verify(r => r.GetByIdAsync(TenantA, It.IsAny<CancellationToken>()), Times.Once);
+        _tenants.Verify(r => r.GetAllAsync(It.IsAny<CancellationToken>()), Times.Never);
+        _uow.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task List_WithNoTenantContext_FailsClosed_WithoutQueryingAnything()
+    {
+        // An empty list is the answer for "your tenant is gone", NOT for "there is no tenant
+        // context". The second case must still throw, exactly as GetByIdAsync does, so a
+        // bypassed middleware can never be answered with a quietly successful empty page.
+        _tenantProvider
+            .Setup(p => p.GetCurrentTenant())
+            .Throws(new InvalidOperationException("No tenant context available."));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Sut().GetAllAsync());
+
+        AssertNoStoreAccess();
+    }
 }

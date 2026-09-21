@@ -117,20 +117,21 @@ public class TenantManagementServiceTests : IdentityServiceTestBase
     }
 
     // ── GetAllAsync ──
-
-    [Fact]
-    public async Task GetAll_OrdersByName()
-    {
-        await PersistAsync(CreateTestTenant("ZED"));
-        await PersistAsync(CreateTestTenant("ACME"));
-        await PersistAsync(CreateTestTenant("MID"));
-
-        var result = await _sut.GetAllAsync();
-
-        Assert.True(result.IsSuccess);
-        // Tenant.Name is "{code} Manufacturing" → ordered ACME, MID, ZED
-        Assert.Equal(new[] { "ACME", "MID", "ZED" }, result.Value.Select(t => t.Code));
-    }
+    //
+    // `GetAll_OrdersByName` was retired in phase S-T2C. It persisted three tenants and
+    // asserted they came back ordered ACME, MID, ZED — a contract that only existed while
+    // the service returned every tenant on the platform. GetAllAsync is now confined to the
+    // caller's own tenant and yields zero or one item, so ordering several tenants is no
+    // longer part of this service's behaviour and the assertion had nothing left to protect.
+    //
+    // It was NOT rewritten to expect one item: that would have kept the name and the shape
+    // while silently swapping what the test proves. The real contract now lives in
+    // `TenantManagementService_TenantScopedReadTests`, which proves the list is scoped AND
+    // that the platform-wide repository read is never issued.
+    //
+    // TenantRepository.GetAllAsync still orders by name but has no production caller left;
+    // it is reported as a dead primitive for separate disposition and deliberately not
+    // covered here, since coverage of dead behaviour is not worth having.
 
     // ── UpdateAsync ──
 
