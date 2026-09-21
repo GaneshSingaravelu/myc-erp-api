@@ -7,20 +7,25 @@ using Microsoft.AspNetCore.Mvc;
 namespace ERP.Api.Controllers.v1;
 
 /// <summary>
-/// TENANT MANAGEMENT CONTROLLER — Admin-only endpoints for managing tenants.
+/// TENANT MANAGEMENT CONTROLLER — Admin-only endpoints operating on the Master DB.
 ///
-/// PROVISIONING FLOW:
-/// ===================
-/// POST /api/v1/tenants →
-///   1. TenantManagementService.Create() — saves Tenant record to Master DB
-///   2. TenantProvisioningService.Provision() — creates tenant DB + runs migrations
-///   3. Returns the new tenant info
+/// WITHDRAWN PLATFORM OPERATIONS (S-T1)
+/// ====================================
+/// Create, Deactivate and Migrate are withdrawn and answer a fixed 405. Each was a
+/// PLATFORM operation reachable by any tenant Admin against any target tenant, and this
+/// application has no platform-administration role: "Admin" is scoped to the tenant chosen
+/// at login, through UserTenants. Scoping them was not possible without inventing privilege
+/// semantics the product does not have, so the capabilities were removed instead. Tenant
+/// provisioning therefore has no HTTP channel at present — a replacement is a separate
+/// product decision, and the frontend Tenants page still calls these routes.
 ///
-/// If provisioning fails, the tenant record is kept (IsActive=false) so admin
-/// can retry provisioning without re-entering all details.
+/// AUTHORIZATION: Requires the "Admin" role. That role is tenant-scoped, so it does NOT
+/// mean platform administrator.
 ///
-/// AUTHORIZATION: Requires "Admin" role (only system admins can manage tenants).
-/// NOTE: No X-Tenant-Id header needed — these endpoints operate on the Master DB.
+/// NOTE: "/api/v1/tenants" is in TenantMiddleware's skip list, so no X-Tenant-Id header is
+/// required and HttpContext.Items["CurrentTenant"] is NOT populated for these endpoints.
+/// ITenantProvider.GetCurrentTenant() throws here. Scoping the remaining read/update
+/// endpoints to the caller's tenant has to resolve that first.
 /// </summary>
 [ApiController]
 [Route("api/v1/[controller]")]
@@ -42,40 +47,22 @@ public class TenantsController : ControllerBase
     }
 
     /// <summary>
-    /// Create a new tenant and provision its database.
+    /// Creating a tenant is withdrawn over HTTP (S-T1).
+    ///
+    /// <para>Provisioning a tenant is a PLATFORM operation: it creates a record no tenant
+    /// owns, and it opens an outbound database connection to a host supplied by the caller.
+    /// This application has no platform-administration model — "Admin" means Admin *of the
+    /// selected tenant*, scoped at login through UserTenants — so there is no authority that
+    /// could safely be checked here. The capability is withdrawn rather than handed to every
+    /// tenant Admin.</para>
+    ///
+    /// <para>The answer is a constant, and the request body is not bound at all: no tenant
+    /// record is created, no connection string is stored, and no outbound connection is
+    /// attempted. Because nothing is read, the response cannot vary with the payload.</para>
     /// </summary>
     [HttpPost]
-    public async Task<IActionResult> Create([FromBody] CreateTenantRequest request)
-    {
-        // Step 1: Create tenant record in Master DB
-        var createResult = await _tenantService.CreateAsync(request);
-        if (!createResult.IsSuccess)
-            return BadRequest(createResult.Error);
-
-        var tenant = createResult.Value;
-
-        // Step 2: Provision the tenant database (create + migrate)
-        var provisionResult = await _provisioningService.ProvisionTenantDatabaseAsync(
-            request.ConnectionString, request.DbProvider);
-
-        if (!provisionResult.IsSuccess)
-        {
-            _logger.LogError("Tenant '{TenantCode}' created but database provisioning failed: {Error}",
-                request.Code, provisionResult.Error.Message);
-
-            // Return partial success — tenant record exists but DB provisioning failed
-            // Admin can retry via POST /api/v1/tenants/{id}/migrate
-            return StatusCode(207, new
-            {
-                Tenant = tenant,
-                ProvisioningError = provisionResult.Error.Message,
-                Message = "Tenant record created but database provisioning failed. Use the migrate endpoint to retry."
-            });
-        }
-
-        _logger.LogInformation("Tenant '{TenantCode}' fully provisioned", request.Code);
-        return CreatedAtAction(nameof(GetById), new { id = tenant.Id }, tenant);
-    }
+    public IActionResult Create()
+        => StatusCode(405, new { error = "Creating tenants is not supported." });
 
     /// <summary>
     /// Get all tenants.
@@ -108,49 +95,33 @@ public class TenantsController : ControllerBase
     }
 
     /// <summary>
-    /// Deactivate a tenant (users can no longer log in).
+    /// Deactivating a tenant is withdrawn over HTTP (S-T1).
+    ///
+    /// <para>Setting a tenant inactive locks every user of that tenant out — TenantMiddleware
+    /// refuses their requests with 403 and login fails — so it is a platform-level
+    /// availability control, not a tenant-local edit. The target was an arbitrary id, so any
+    /// tenant Admin could disable any other tenant.</para>
+    ///
+    /// <para>The answer is a constant. The target is never looked up, so this endpoint cannot
+    /// be used to learn whether an id names a real tenant.</para>
     /// </summary>
     [HttpDelete("{id:guid}")]
-    public async Task<IActionResult> Deactivate(Guid id)
-    {
-        var result = await _tenantService.DeactivateAsync(id);
-        return result.IsSuccess ? NoContent() : NotFound(result.Error);
-    }
+    public IActionResult Deactivate(Guid id)
+        => StatusCode(405, new { error = "Deactivating tenants is not supported." });
 
     /// <summary>
-    /// Retry database provisioning for a tenant whose initial provisioning failed.
-    /// Also used to apply pending migrations to an existing tenant database.
+    /// Tenant database migration is withdrawn over HTTP (S-T1).
+    ///
+    /// <para>This action read the TARGET tenant's connection string and ran schema migrations
+    /// against that database. Both the credential read and the migration are platform
+    /// operations, and the target was an arbitrary id, so any tenant Admin could reach another
+    /// tenant's database. The private helper that fetched the connection string is removed
+    /// with it — withdrawal has to remove the mechanism, not just the route.</para>
+    ///
+    /// <para>The answer is a constant. No tenant is looked up, no connection string is
+    /// retrieved, and no database is contacted.</para>
     /// </summary>
     [HttpPost("{id:guid}/migrate")]
-    public async Task<IActionResult> Migrate(Guid id)
-    {
-        // Get tenant to read connection string and provider
-        var tenantResult = await _tenantService.GetByIdAsync(id);
-        if (!tenantResult.IsSuccess)
-            return NotFound(tenantResult.Error);
-
-        // We need the connection string, which isn't in the response DTO for security.
-        // Re-fetch from the underlying store.
-        var result = await _provisioningService.MigrateTenantDatabaseAsync(
-            await GetTenantConnectionStringAsync(id),
-            tenantResult.Value.DbProvider);
-
-        return result.IsSuccess
-            ? Ok(new { Message = "Database migration completed successfully." })
-            : BadRequest(result.Error);
-    }
-
-    /// <summary>
-    /// Helper to get connection string directly (not exposed in DTOs).
-    /// </summary>
-    private async Task<string> GetTenantConnectionStringAsync(Guid tenantId)
-    {
-        // Access the MasterDbContext directly via the tenant management service's backing store
-        // This is a pragmatic shortcut — the controller is already in the composition root
-        var tenantStore = HttpContext.RequestServices.GetRequiredService<ITenantStore>();
-        var allTenants = await tenantStore.GetAllAsync();
-        var tenant = allTenants.FirstOrDefault(t => t.Id == tenantId);
-        return tenant?.ConnectionString
-            ?? throw new InvalidOperationException($"Tenant {tenantId} connection string not found.");
-    }
+    public IActionResult Migrate(Guid id)
+        => StatusCode(405, new { error = "Tenant database migration is not supported." });
 }
