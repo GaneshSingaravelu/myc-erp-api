@@ -87,11 +87,30 @@ public class TenantsController : ControllerBase
     /// <summary>
     /// Update tenant details (name, active status).
     /// </summary>
+    /// <summary>
+    /// Update tenant details.
+    ///
+    /// <para>A refusal is not always "not found". Scope failures stay 404 so a caller naming
+    /// another tenant's id cannot tell it apart from one that names nothing, but refusing to
+    /// change the activation state is a statement about the request, not the target, and must
+    /// read as 400 — returning 404 there would imply the tenant does not exist.</para>
+    ///
+    /// <para>The response body keeps this controller's existing shape (the <c>Error</c>
+    /// itself) in both branches, so the 404 contract is unchanged by this mapping.</para>
+    /// </summary>
     [HttpPut("{id:guid}")]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateTenantRequest request)
     {
         var result = await _tenantService.UpdateAsync(id, request);
-        return result.IsSuccess ? Ok(result.Value) : NotFound(result.Error);
+
+        if (result.IsSuccess)
+            return Ok(result.Value);
+
+        return result.Error.Code switch
+        {
+            "Tenant.NotFound" => NotFound(result.Error),
+            _ => BadRequest(result.Error),
+        };
     }
 
     /// <summary>

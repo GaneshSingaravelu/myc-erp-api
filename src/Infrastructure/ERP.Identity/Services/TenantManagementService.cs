@@ -61,9 +61,10 @@ public class TenantManagementService : ITenantManagementService
     /// validated tenant is present, so code that reaches this without tenant resolution
     /// raises an error instead of running an unscoped query.</para>
     ///
-    /// <para>Consulted by <see cref="GetByIdAsync"/> (phase S-T2B) and
-    /// <see cref="GetAllAsync"/> (phase S-T2C). <see cref="UpdateAsync"/> still runs
-    /// unscoped and is addressed in a later phase.</para>
+    /// <para>Consulted by <see cref="GetByIdAsync"/> (phase S-T2B),
+    /// <see cref="GetAllAsync"/> (phase S-T2C) and <see cref="UpdateAsync"/> (phase S-T3).
+    /// <see cref="CreateAsync"/> and <see cref="DeactivateAsync"/> are unreachable over HTTP
+    /// after phase S-T1 and are left unscoped as dead primitives.</para>
     /// </summary>
     private Guid CurrentTenantId => _tenantProvider.GetCurrentTenant().Id;
 
@@ -163,15 +164,47 @@ public class TenantManagementService : ITenantManagementService
         return Result.Success<IReadOnlyList<TenantListResponse>>(dtos);
     }
 
+    /// <summary>
+    /// Update the caller's own tenant. Renaming is permitted; activating or deactivating is not.
+    ///
+    /// <para><b>Scope.</b> The target must be the tenant the caller is signed in to, and the
+    /// check runs before the repository is touched — so a foreign id is never looked up and
+    /// cannot be distinguished from one that names nothing.</para>
+    ///
+    /// <para><b>Activation is immutable here.</b> This action used to assign
+    /// <c>tenant.IsActive</c> straight from the request, which made it a second, quieter
+    /// deactivation path alongside the DELETE that phase S-T1 withdrew: setting a tenant
+    /// inactive locks every one of its users out at the middleware. Disabling a tenant is a
+    /// platform operation and this application has no platform-administration role, so the
+    /// capability is refused rather than scoped.</para>
+    ///
+    /// <para>The refusal is explicit, never silent: a request asking for a different
+    /// activation state fails with <c>Tenant.ActivationImmutable</c> so the caller cannot
+    /// believe a deactivation succeeded. A request that omits the field, or repeats the value
+    /// already stored, carries no activation intent and is allowed through — but even then
+    /// <c>IsActive</c> is never assigned, so no code path here can change it.</para>
+    ///
+    /// <para><b>Order matters.</b> Validation completes before <c>Name</c> is touched, so a
+    /// refused request leaves the tracked entity exactly as it was found and never reaches
+    /// <c>SaveChangesAsync</c>. Assigning first and validating afterwards would leave a
+    /// mutated entity in the unit of work for whatever saved next.</para>
+    /// </summary>
     public async Task<Result<TenantResponse>> UpdateAsync(Guid id, UpdateTenantRequest request)
     {
+        if (id != CurrentTenantId)
+            return Result.Failure<TenantResponse>(Error.NotFound("Tenant", id));
+
         var tenant = await _tenants.GetByIdWithUserTenantsAsync(id);
 
         if (tenant is null)
             return Result.Failure<TenantResponse>(Error.NotFound("Tenant", id));
 
+        if (request.IsActive.HasValue && request.IsActive.Value != tenant.IsActive)
+            return Result.Failure<TenantResponse>(Error.Validation(
+                "Tenant.ActivationImmutable",
+                "A tenant's active state cannot be changed through this endpoint."));
+
         tenant.Name = request.Name;
-        tenant.IsActive = request.IsActive;
 
         await _uow.SaveChangesAsync();
 

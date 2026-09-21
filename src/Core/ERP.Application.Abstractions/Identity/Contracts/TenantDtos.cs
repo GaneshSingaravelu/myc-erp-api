@@ -31,6 +31,15 @@ public record CreateTenantRequest(
     string ConnectionString,
     string DbProvider = "SqlServer");
 
+/// <summary>
+/// Request to update a tenant's editable details.
+///
+/// <para><c>IsActive</c> is nullable on purpose. Activation state is not editable through
+/// this endpoint, and a non-nullable <c>bool</c> could not tell an omitted field from an
+/// explicit <c>false</c> — every client that left it out would have looked like it was
+/// asking to deactivate the tenant. <c>null</c> means "no activation request"; a supplied
+/// value is accepted only when it already matches the stored state.</para>
+/// </summary>
 public record UpdateTenantRequest(
     string Name,
-    bool IsActive);
+    bool? IsActive);
