@@ -31,6 +31,58 @@ public interface IRoleRepository
     /// <summary>List all roles with RolePermissions → Permission eager-loaded, ordered by Name.</summary>
     Task<IReadOnlyList<AppRole>> GetAllWithPermissionsAsync(CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// List the roles visible inside <paramref name="tenantId"/>, with RolePermissions →
+    /// Permission eager-loaded, ordered by Name.
+    ///
+    /// <para>Visible: a system role (TenantId null, available to every tenant) or a role
+    /// owned by this tenant. A role owned by another tenant is never returned.</para>
+    ///
+    /// <para>Three predicates coexist in this interface and must not be confused.
+    /// VISIBILITY (here) is TenantId null or current. ASSIGNABILITY — whether a role may be
+    /// granted to a user, see <see cref="ExistsAndIsAssignableInTenantAsync"/> — happens to
+    /// use the same rule today. MUTABILITY is strictly narrower: owned by the current tenant
+    /// AND not a system role. Never reach for a visibility method to authorise a write.</para>
+    /// </summary>
+    Task<IReadOnlyList<AppRole>> GetAllVisibleInTenantWithPermissionsAsync(
+        Guid tenantId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Find a role by id, but only if it is visible inside <paramref name="tenantId"/> —
+    /// a system role or one owned by this tenant — with RolePermissions → Permission
+    /// eager-loaded.
+    ///
+    /// <para>Returns null for a role owned by another tenant, exactly as it does for an id
+    /// that does not exist, so the caller cannot tell the two apart and foreign role
+    /// existence is not disclosed.</para>
+    /// </summary>
+    Task<AppRole?> GetByIdVisibleInTenantWithPermissionsAsync(
+        Guid id, Guid tenantId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Find a role by id under the same VISIBILITY boundary as the read methods, but
+    /// TRACKED and without the permission graph, so the caller can classify it before
+    /// deciding whether a write is allowed.
+    ///
+    /// <para>The boundary is visibility, not mutability, on purpose: it collapses "belongs
+    /// to another tenant" and "does not exist" into one null answer, so a caller can answer
+    /// 404 for both without ever running a global existence probe. Deciding whether the
+    /// returned role may actually be written is the caller's job — a system role and an
+    /// unowned legacy role are both visible and neither is mutable.</para>
+    ///
+    /// <para>Deliberately loads no RolePermissions: a destructive replacement must not have
+    /// the graph in hand before authorization has succeeded.</para>
+    /// </summary>
+    Task<AppRole?> GetTrackedByIdVisibleInTenantAsync(
+        Guid id, Guid tenantId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Explicitly load RolePermissions → Permission for an already-tracked role. Used after
+    /// a write has been authorised, so the mutable graph enters the change tracker only once
+    /// the caller is entitled to change it.
+    /// </summary>
+    Task LoadRolePermissionsAsync(AppRole role, CancellationToken cancellationToken = default);
+
     /// <summary>Check whether a role with the given id exists.</summary>
     Task<bool> ExistsByIdAsync(Guid id, CancellationToken cancellationToken = default);
 
@@ -45,8 +97,26 @@ public interface IRoleRepository
     Task<bool> ExistsAndIsAssignableInTenantAsync(
         Guid roleId, Guid tenantId, CancellationToken cancellationToken = default);
 
-    /// <summary>Check whether a role with the given (case-sensitive) name exists.</summary>
-    Task<bool> ExistsByNameAsync(string name, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Whether a role with this normalized name already exists within reach of
+    /// <paramref name="tenantId"/> — meaning owned by that tenant, or global.
+    ///
+    /// <para>Deliberately stricter than the database's unique index on
+    /// (NormalizedName, TenantId). That index would happily allow a tenant to create its own
+    /// "Admin" alongside the global one, because null and a tenant id are different index
+    /// entries. Two roles of the same name both visible in one tenant is ambiguous to every
+    /// human reading a role list, so the global arm is included here.</para>
+    ///
+    /// <para><paramref name="excludeRoleId"/> is required rather than optional so each caller
+    /// states its intent: null when creating, and the role's own id when renaming, so a role
+    /// is never reported as conflicting with itself. Passing the wrong one is a visible
+    /// mistake at the call site instead of a silent default.</para>
+    /// </summary>
+    Task<bool> ExistsByNormalizedNameInTenantOrGlobalAsync(
+        string normalizedName,
+        Guid tenantId,
+        Guid? excludeRoleId,
+        CancellationToken cancellationToken = default);
 
     /// <summary>Stage a new role for insertion.</summary>
     Task AddAsync(AppRole role, CancellationToken cancellationToken = default);
