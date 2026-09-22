@@ -112,13 +112,26 @@ builder.Services.AddSwaggerGen(options =>
         Description = "Enter your JWT token. Example: eyJhbGciOiJIUzI1NiIs..."
     });
 
-    options.AddSecurityRequirement(_ => new Microsoft.OpenApi.OpenApiSecurityRequirement
+    // The reference must carry the host document AND that document's components must be
+    // registered in its workspace. Without both, Microsoft.OpenApi 2.x cannot resolve the
+    // reference target and serialises the requirement as an empty "security": [{}], which
+    // leaves Swagger UI with no reason to attach the Authorization header.
+    options.AddSecurityRequirement(document =>
     {
+        document.RegisterComponents();
+
+        return new Microsoft.OpenApi.OpenApiSecurityRequirement
         {
-            new Microsoft.OpenApi.OpenApiSecuritySchemeReference("Bearer"),
-            new List<string>()
-        }
+            {
+                new Microsoft.OpenApi.OpenApiSecuritySchemeReference("Bearer", document),
+                new List<string>()
+            }
+        };
     });
+
+    // Gives Swagger UI a box for the tenant header TenantMiddleware already requires.
+    // Documentation only — it changes nothing about how the header is validated.
+    options.OperationFilter<ERP.Api.Swagger.TenantHeaderOperationFilter>();
 });
 
 // --- CORS (Cross-Origin Resource Sharing) ---
