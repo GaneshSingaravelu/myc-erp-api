@@ -1462,7 +1462,19 @@ A: Middleware catches exceptions from the entire pipeline (including other middl
 
 ### What is it?
 
-Multi-database provider support means our application can connect to different database engines (SQL Server, PostgreSQL) for different tenants at runtime. The same application code works with both databases -- the provider is selected per-request based on tenant configuration.
+Multi-database provider support means the same application code runs against either database engine. **SQL Server and PostgreSQL are both first-class, chosen per customer deployment** — Master/Identity DB *and* Tenant DBs use the same provider (approved decision `ARCH-DB-03`). Mixing providers *within one deployment* is technically possible via `Tenant.DbProvider` but is **not a primary requirement** (`ARCH-DB-04`).
+
+> **⚠️ CURRENT IMPLEMENTATION GAPS — this section describes the intent, not today's reality.**
+>
+> | Gap | Evidence |
+> |---|---|
+> | **`DB-01` — Master DB is SQL-Server-only.** Two hardcoded call sites, no provider switch | `InfrastructureServiceExtensions.cs:109` (runtime) and `tools/ERP.DbMigrator/MasterDbContextFactory.cs:43` (design-time) both call `UseSqlServer(...)` unconditionally |
+> | **`DB-02` — PostgreSQL has no migrations.** All four migration files live under `ERP.Persistence.SqlServer` | `ERP.Persistence.PostgreSql/` contains zero migration files, yet its `MigrationsAssembly` points at itself |
+> | **`DB-08` — `ERP.DbMigrator` is a stub** | `tools/ERP.DbMigrator/Program.cs` prints four lines and exits; it parses no arguments |
+>
+> `AppDbContextFactory` (tenant, design-time) **does** switch correctly on `DbProvider`.
+> These are implementation gaps against an approved requirement, **not open questions**.
+> Tracked in `docs/SATY_ERP_MASTER_EXECUTION_PLAN.md` §6.2 (frontend repo).
 
 **Analogy:** A universal remote control. It can operate different TV brands (Samsung, LG, Sony) without changing the remote itself. You just tell it which TV to control. Our application code is the remote; the database providers (SQL Server, PostgreSQL) are the TVs. TenantDbContextFactory tells the remote which TV to talk to.
 
@@ -1470,8 +1482,8 @@ Multi-database provider support means our application can connect to different d
 
 **Separate provider projects** keep database-specific code isolated:
 ```
-ERP.Persistence.SqlServer/    --> SQL Server-specific config + migrations
-ERP.Persistence.PostgreSql/   --> PostgreSQL-specific config + migrations
+ERP.Persistence.SqlServer/    --> SQL Server-specific config + migrations (4 migration files)
+ERP.Persistence.PostgreSql/   --> PostgreSQL-specific config; migrations assembly is EMPTY (DB-02)
 ```
 
 **SQL Server provider:**

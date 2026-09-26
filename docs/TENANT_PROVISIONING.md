@@ -10,87 +10,55 @@ Each tenant in the ERP system gets:
 2. A **dedicated database** with all business tables (migrations applied)
 3. **Default seed data** (plants, preferences)
 
-Provisioning can be done manually (CLI/SQL) or via the Admin API.
+Provisioning is done from configuration (see Option 1 below) plus manual database steps.
+
+> **⚠️ STATUS 2026-09-22 — READ BEFORE USING THIS DOCUMENT.**
+>
+> There is **no HTTP tenant-provisioning API**. An earlier version of this guide
+> recommended one; that section was factually wrong *and* is now superseded. See
+> **§Withdrawn HTTP provisioning API** below. Tenants are created today from
+> configuration via `IdentitySeeder` (Option 2). The approved long-term direction is an
+> internal secured provisioning tool/job — **not** a public application endpoint.
+> Authority: `docs/SATY_ERP_MASTER_EXECUTION_PLAN.md` §4.5 (frontend repo).
 
 ---
 
-## Option 1: Admin API (Recommended for Production)
+## Withdrawn HTTP provisioning API — `SUPERSEDED` / `HISTORICAL`
 
-### `POST /api/admin/tenants`
+A previous version of this guide documented an "Admin API" as the **recommended**
+production provisioning route. That guidance is removed. It was wrong on every point:
 
-**Authorization:** Requires `TENANT_CREATE` permission (Admin role only)
+| Previously documented | Reality |
+| --- | --- |
+| `POST /api/admin/tenants` (create) | Path was never `/api/admin/...` — the controller route is `/api/v1/tenants`. **Create now returns a fixed `405`** (PR #14) |
+| `PUT /api/admin/tenants/{id}` | Real path `/api/v1/tenants/{id}`. Tenant-scoped to the caller's own tenant. `Name` is editable; a differing `isActive` returns **`400 Tenant.ActivationImmutable`** |
+| `GET /api/admin/tenants` "lists all tenants" | Real path `/api/v1/tenants`. Returns **zero or one** tenant — the caller's own. Cross-tenant enumeration was a security defect and is closed |
+| `POST /api/admin/tenants/{id}/migrate` | **Returns a fixed `405`** (PR #14) |
+| `POST /api/admin/tenants/migrate-all` | **Never existed.** No such endpoint or handler is present in the codebase |
+| "Requires `TENANT_CREATE` permission" | **No such permission exists.** No tenant permissions are seeded. Tenant Management is gated by `[Authorize(Roles = "Admin")]` alone, and `Admin` is **tenant-qualified** |
+| Create payload with `adminUserName` / `adminEmail` | Not part of any request contract |
 
-**Request:**
-```json
-{
-  "code": "ABC",
-  "name": "ABC Manufacturing Ltd",
-  "dbProvider": "SqlServer",
-  "adminUserName": "abc_admin",
-  "adminEmail": "admin@abc-mfg.com",
-  "adminPassword": "SecureP@ss123"
-}
-```
+**Why the capabilities were withdrawn.** `Admin` means "Admin of the tenant you signed
+in to" — there is no platform-administrator model in this system. Creating, deactivating
+or migrating an *arbitrary* tenant requires an authority that does not exist, so those
+operations were removed at the HTTP boundary rather than granted. **There is no
+replacement endpoint, and re-exposing one is not an approved option.**
 
-**What the API does (automatically):**
+**Do not restore this section.** If a provisioning channel is ever built, it follows the
+approved direction in `SATY_ERP_MASTER_EXECUTION_PLAN.md` §4.5.
 
-```
-Step 1: Validate request
-  ├── Check tenant code is unique
-  ├── Check admin username/email not taken
-  └── Validate password strength
+---
 
-Step 2: Create tenant database
-  ├── Generate connection string: Server=localhost;Database=ERP_{Code}
-  ├── CREATE DATABASE ERP_ABC
-  └── Run all EF Core migrations on the new database
+## Option 1 (current): Configuration + seeder
 
-Step 3: Register tenant in Master DB
-  ├── INSERT INTO Tenants (Code, Name, ConnectionString, DbProvider, IsActive)
-  └── Clear tenant cache (so TenantMiddleware picks it up)
+Tenants are declared in the `Tenants` section of `appsettings` / `appsettings.{Env}.json`
+(`Id`, `Identifier` = tenant code, `Name`, `ConnectionString`, `DbProvider`) and inserted
+on startup by `IdentitySeeder.SeedTenantsAsync` if absent. Tenant onboarding is therefore
+a **deploy-time configuration change** today.
 
-Step 4: Create tenant admin user (Master DB)
-  ├── INSERT INTO Users (UserName, Email, PasswordHash, ...)
-  ├── INSERT INTO UserTenants (UserId, TenantId, IsDefault = true)
-  ├── INSERT INTO UserRoles (UserId, RoleId = Admin, TenantId)
-  └── Password hash via BCrypt
-
-Step 5: Seed tenant database
-  └── Create default plant (optional)
-
-Step 6: Return result
-  └── { tenantId, tenantCode, adminUserId, connectionVerified: true }
-```
-
-**Response (201 Created):**
-```json
-{
-  "tenantId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "code": "ABC",
-  "name": "ABC Manufacturing Ltd",
-  "dbProvider": "SqlServer",
-  "adminUserId": "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy",
-  "databaseCreated": true,
-  "migrationsApplied": true,
-  "isActive": true
-}
-```
-
-### `GET /api/admin/tenants`
-
-Lists all tenants (Admin only). Does NOT expose connection strings.
-
-### `PUT /api/admin/tenants/{id}`
-
-Update tenant name, activate/deactivate. Cannot change code or DB provider.
-
-### `POST /api/admin/tenants/{id}/migrate`
-
-Re-run migrations on a specific tenant database (useful after deploying schema updates).
-
-### `POST /api/admin/tenants/migrate-all`
-
-Run pending migrations on ALL active tenant databases. Used after deploying a new version.
+> ⚠️ `Tenant.ConnectionString` is currently stored **in plaintext** in the Master DB
+> (`nvarchar(500)`, NOT NULL). The entity comment claiming it is encrypted at rest is
+> aspirational — no encryption is implemented. Tracked as `DB-05`.
 
 ---
 
@@ -120,12 +88,22 @@ dotnet ef database update \
   --connection "Server=localhost;Database=ERP_ABC;Trusted_Connection=true;TrustServerCertificate=true;"
 
 # For PostgreSQL tenant
+#   ⚠️ DOES NOT WORK TODAY — see the warning below.
 dotnet ef database update \
   --project src/Infrastructure/ERP.Persistence.PostgreSql \
   --startup-project src/Host/ERP.Api \
   --context AppDbContext \
   --connection "Host=localhost;Database=erp_abc;Username=erp_user;Password=yourpassword"
 ```
+
+> **⚠️ PostgreSQL migrations do not exist (`DB-02`).** `ERP.Persistence.PostgreSql` contains
+> **zero migration files** — all four migrations in the repository live under
+> `ERP.Persistence.SqlServer`. The PostgreSQL command above would therefore apply nothing.
+> `appsettings.Development.json` seeds `pg-tenant` with `DbProvider: "PostgreSql"`: it can be
+> resolved and connected to, but its schema cannot be created by this codebase.
+>
+> PostgreSQL parity for **both** Master and Tenant databases is an **approved product
+> requirement** (`ARCH-DB-03`), not an open question. This is an implementation gap.
 
 ### Step 3: Register Tenant in Master DB
 
@@ -193,17 +171,23 @@ dotnet ef migrations add AddFinanceModule \
 
 ### 2. Apply to All Tenants
 
-**Via Admin API:**
-```
-POST /api/admin/tenants/migrate-all
-```
+> **⚠️ Neither automated route below exists. Only the manual route works today.**
 
-**Via CLI (DbMigrator tool):**
-```bash
-dotnet run --project tools/ERP.DbMigrator -- --migrate-all
-```
+~~**Via Admin API:** `POST /api/admin/tenants/migrate-all`~~
+`SUPERSEDED` — **this endpoint never existed**, and per-tenant `migrate` now returns `405`.
 
-**Manually per tenant:**
+~~**Via CLI (DbMigrator tool):** `dotnet run --project tools/ERP.DbMigrator -- --migrate-all`~~
+`SUPERSEDED` — **`tools/ERP.DbMigrator` is a stub.** Its `Program.cs` prints four lines and
+exits ("Implementation will be added when we create the first migration"). It parses no
+arguments, so `--migrate-all` is not a flag. The gap is recorded as `DB-08`.
+
+> ⛔ **Do not modify `tools/ERP.DbMigrator`.** The *direction* of an internal secured
+> provisioning tool is approved (`ONB-DIR-02`), but **whether this project is that tool, and
+> its exact implementation boundary, is a separate scope decision that has not been taken**
+> (owner, 2026-09-26). Provisioning-tool development must not be folded into
+> database-provider-parity work. See `SATY_ERP_MASTER_EXECUTION_PLAN.md` §6.2 `DB-08`.
+
+**Manually per tenant (the only working route):**
 ```bash
 dotnet ef database update \
   --project src/Infrastructure/ERP.Persistence.SqlServer \

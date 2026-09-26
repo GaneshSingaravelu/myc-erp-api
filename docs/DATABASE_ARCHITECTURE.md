@@ -626,38 +626,53 @@ Each tenant database contains these tables. They are identical in schema across 
 
 ## Seeded Data
 
-### Permissions (28 — system-defined)
+### Permissions (28 — system-defined, global catalogue)
+
+> **CORRECTED 2026-09-22.** An earlier version of this table listed `SCREAMING_SNAKE`
+> codes (`USER_VIEW`, `WORKORDER_CREATE`) and a **Tenant** category containing
+> `TENANT_CREATE` / `TENANT_VIEW` / `TENANT_MANAGE`. **None of those codes has ever
+> existed in the codebase.** The list below is the actual seeded set from
+> `IdentitySeeder.cs`. The count (28) coincidentally matched; the membership did not.
+>
+> **There are no tenant permissions.** Tenant Management is gated by
+> `[Authorize(Roles = "Admin")]` alone, and `Admin` is tenant-qualified. The seeded
+> menu mapping records this explicitly: *"MENU_TENANTS: no permission — visible to all
+> admins via [Authorize(Roles=\"Admin\")]"*.
+
+Codes are **dot-separated lowercase**. `Permission` carries **no `TenantId`** — it is a
+global capability catalogue (approved decision `AUTH-01`). Tenant scope comes from the
+owning Role / UserRole / membership, never from duplicating permission rows per tenant.
 
 | Category | Code | Name |
 |----------|------|------|
-| Work Order | `WORKORDER_CREATE` | Create Work Order |
-| Work Order | `WORKORDER_VIEW` | View Work Orders |
-| Work Order | `WORKORDER_UPDATE` | Update Work Order |
-| Work Order | `WORKORDER_DELETE` | Delete Work Order |
-| Job Card | `JOBCARD_CREATE` | Create Job Card |
-| Job Card | `JOBCARD_VIEW` | View Job Cards |
-| Job Card | `JOBCARD_UPDATE` | Update Job Card |
-| Job Card | `JOBCARD_DELETE` | Delete Job Card |
-| Quality | `QA_VIEW` | View QA Records |
-| Quality | `QA_APPROVE` | Approve QA |
-| Quality | `QA_REJECT` | Reject QA |
-| Production | `PRODUCTION_VIEW` | View Production Data |
-| Production | `PRODUCTION_MANAGE` | Manage Production |
-| Workflow | `WORKFLOW_CREATE` | Create Process Template |
-| Workflow | `WORKFLOW_VIEW` | View Process Templates |
-| Workflow | `WORKFLOW_UPDATE` | Update Process Template |
-| Workflow | `WORKFLOW_DELETE` | Delete Process Template |
-| User | `USER_CREATE` | Create User |
-| User | `USER_VIEW` | View Users |
-| User | `USER_UPDATE` | Update User |
-| User | `USER_DELETE` | Delete User |
-| Role | `ROLE_CREATE` | Create Role |
-| Role | `ROLE_VIEW` | View Roles |
-| Role | `ROLE_UPDATE` | Update Role |
-| Role | `ROLE_DELETE` | Delete Role |
-| Tenant | `TENANT_CREATE` | Create Tenant |
-| Tenant | `TENANT_VIEW` | View Tenants |
-| Tenant | `TENANT_MANAGE` | Manage Tenant Settings |
+| User | `user.view` | View Users |
+| User | `user.create` | Create Users |
+| User | `user.update` | Update Users |
+| User | `user.delete` | Delete Users |
+| User | `user.assignroles` | Assign Roles |
+| Role | `role.view` | View Roles |
+| Role | `role.create` | Create Roles |
+| Role | `role.update` | Update Roles |
+| Role | `role.delete` | Delete Roles |
+| Role | `role.assignpermissions` | Assign Permissions |
+| WorkOrder | `workorder.view` | View Work Orders |
+| WorkOrder | `workorder.create` | Create Work Orders |
+| WorkOrder | `workorder.update` | Update Work Orders |
+| WorkOrder | `workorder.close` | Close Work Orders |
+| JobCard | `jobcard.view` | View Job Cards |
+| JobCard | `jobcard.create` | Create Job Cards |
+| JobCard | `jobcard.split` | Split Job Cards |
+| Production | `production.start` | Start Production |
+| Production | `production.complete` | Complete Production |
+| Production | `production.view` | View Production |
+| QA | `qa.inspect` | Perform QA Inspection |
+| QA | `qa.approve` | Approve QA |
+| QA | `qa.reject` | Reject QA |
+| QA | `qa.view` | View QA Results |
+| Workflow | `workflow.view` | View Process Templates |
+| Workflow | `workflow.create` | Create Process Templates |
+| Workflow | `workflow.update` | Update Process Templates |
+| Workflow | `workflow.delete` | Delete Process Templates |
 
 ### Roles (4 system roles, TenantId = NULL)
 
@@ -956,17 +971,33 @@ UserTenants table:
   │ aaa-111   │ tenant-XYZ │ false     │ 2026-03-15 10:00:00 │
   └──────────────────────────────────────────────────────────┘
 
-UserRoles table (tenant-scoped):
+UserRoles table (tenant-scoped — TenantId is NOT NULL):
   ┌──────────────────────────────────────────────────────┐
   │ UserId    │ RoleId         │ TenantId                │
-  │ aaa-111   │ role-admin     │ NULL (system role)      │
+  │ aaa-111   │ role-admin     │ tenant-ABC              │
+  │ aaa-111   │ role-viewer    │ tenant-XYZ              │
   └──────────────────────────────────────────────────────┘
 ```
 
+> **CORRECTED 2026-09-22.** An earlier version of this example showed
+> `UserRoles.TenantId = NULL (system role)` and described permission extraction as
+> `TenantId IS NULL (system) OR TenantId = {abcId}`. **That row cannot exist and that
+> query is not what the code does.** The two nullable-vs-required columns were conflated:
+>
+> | Column | Nullable? | Meaning |
+> |---|---|---|
+> | `Roles.TenantId` | **nullable** | `NULL` = system role *definition*, available to all tenants |
+> | `UserRoles.TenantId` | **NOT NULL** | The tenant a role *assignment* applies to |
+>
+> `AuthService.LoginAsync` filters assignments with
+> `Where(ur => ur.TenantId == resolvedTenant.Id)` — **there is no `IS NULL` branch**. The
+> old wording described a cross-tenant role-leak path that does not exist in the code.
+
 **Login with `tenantCode: "ABC"`:**
-- JWT `tenant_id` = ABC
+- JWT `tenant_id` = ABC (always the tenant **Code**, even if the caller addressed it by GUID)
 - All API requests use `X-Tenant-Id: ABC` → routes to `ERP_ABC` database
-- Permissions extracted from roles where `TenantId IS NULL` (system) OR `TenantId = {abcId}`
+- Roles and permissions come **only** from `UserRoles` rows where `TenantId = {abcId}`;
+  the role *definition* may be a system role (`Roles.TenantId IS NULL`) or a tenant-specific one
 
 **Switch to tenant XYZ:** User logs in again with `tenantCode: "XYZ"` → new JWT, new session, routes to `ERP_XYZ` database. Same user, completely isolated data.
 
