@@ -10,7 +10,12 @@ Supports multi-tenant, multi-database-provider architecture for manufacturing co
 
 **Stack:** .NET 10 | EF Core 10 | MediatR | FluentValidation | JWT | SignalR | Serilog
 **Frontend:** Angular (separate repository, integrated via REST API + SignalR)
-**Databases:** SQL Server, PostgreSQL (per-tenant choice), Oracle planned
+**Databases:** SQL Server **and** PostgreSQL are first-class, chosen **per customer deployment**
+(Master/Identity DB *and* Tenant DBs use the same provider). Mixed providers within one
+deployment are not a primary requirement. Oracle is **not** in the approved scope.
+> ⚠️ **Current implementation gaps against this requirement:** `MasterDbContext` is hardcoded
+> to SQL Server (`InfrastructureServiceExtensions.cs:107-111`) and **no PostgreSQL migrations
+> exist**. Tracked as `DB-01`/`DB-02` in `docs/SATY_ERP_MASTER_EXECUTION_PLAN.md` (frontend repo).
 **Developer:** Solo developer, freshers joining later
 
 ## Solution Structure
@@ -27,7 +32,7 @@ ERP.slnx                              ← .NET 10 SDK format, all projects targe
 ├── src/Infrastructure/
 │   ├── ERP.Persistence/                           ← AppDbContext, Repository<T>, UnitOfWork, Interceptors
 │   ├── ERP.Persistence.SqlServer/                 ← SQL Server provider + migrations assembly
-│   ├── ERP.Persistence.PostgreSql/                ← PostgreSQL provider + migrations assembly
+│   ├── ERP.Persistence.PostgreSql/                ← PostgreSQL provider; migrations assembly is EMPTY (DB-02)
 │   ├── ERP.Infrastructure/                        ← TenantMiddleware, TenantDbContextFactory, CacheService
 │   ├── ERP.Identity/                              ← Services + repositories + entities (JWT, AppUser, AppRole, Permission)
 │   │   ├── Abstractions/Persistence/              ← IUserRepository, IRoleRepository, IPermissionRepository,
@@ -77,7 +82,10 @@ ERP.slnx                              ← .NET 10 SDK format, all projects targe
   3. `TenantDbContextFactory` creates AppDbContext with correct provider and connection string
   4. Auth service queries MasterDbContext for user/roles/permissions
   5. Business handlers query AppDbContext (tenant-specific database)
-- **Tenant provisioning:** Admin API creates DB, runs migrations, seeds admin user automatically
+- **Tenant provisioning:** `SUPERSEDED by PR #14.` There is **no HTTP provisioning channel**.
+  `POST /tenants`, `DELETE /tenants/{id}` and `POST /tenants/{id}/migrate` return a fixed `405`
+  and have **no replacement**. Tenants are created today from the `Tenants` section of
+  `appsettings` via `IdentitySeeder.SeedTenantsAsync`. See `docs/TENANT_PROVISIONING.md`.
 - **Cross-DB references:** UserPlantAccess.UserId → Master.Users validated in app code (no FK constraint — SQL Server doesn't support cross-DB FKs)
 
 ### 3. Multi-Database Provider
@@ -268,7 +276,7 @@ If `ngx-cerious-widgets` fails Angular 20 compatibility test:
 - [x] Phase 1: Identity APIs (login, register, role/permission management) + Workflow engine (ProcessTemplate, ProcessStep CRUD)
 - [~] Phase 2: Production module — WorkOrder & JobCard entities, CRUD commands/queries, controllers — **PARTIAL: see "Phase 2 Audit Gaps" below**
 - [x] Phase 2.5A: Master DB architecture (MasterDbContext, redesigned identity entities, DesignTimeDbContextFactories)
-- [x] Phase 2.5B: Tenant provisioning API (TenantsController, TenantManagementService, TenantProvisioningService, MasterDbTenantStore)
+- [x] Phase 2.5B: Tenant provisioning API (TenantsController, TenantManagementService, TenantProvisioningService, MasterDbTenantStore) — **`SUPERSEDED` by PR #14 (merge `1f42ec6`):** Create / Deactivate / Migrate were **withdrawn** at the HTTP boundary (fixed `405`, no replacement); `GET`/`PUT` are now tenant-scoped. `TenantProvisioningService` remains in the codebase with **zero production callers** (tracked as `SEC-18`)
 - [x] Phase 2.5C: Refactor auth flow for Master DB (sessions, lockout, password history, SecurityStamp, logout)
 - [~] Phase 2.5D: Dynamic menu API (permission-filtered sidebar) — **PARTIAL: API supports unlimited hierarchy, UI submenu renders n-levels recursively, but (a) sidebar collapsed-icon click does NOT expand (only opens flyout), (b) seed data only goes 1 level deep — needs multi-hierarchy demo seed**
 - [~] Phase 2.5E: Tenant DB additions (Plants, UserPlantAccess, UserPreferences, AuditLogs) — **INFRASTRUCTURE-ONLY: entities + EF configs + migrations exist, but ZERO integration (see audit below)**
@@ -294,7 +302,7 @@ If `ngx-cerious-widgets` fails Angular 20 compatibility test:
   - [x] **2.9E-1 — UI Alignment & Spacing:** Modal button order (primary action first, Cancel last, right-aligned with gap). `[modal-footer]` flex styles in consumer components. Tab spacing `margin-bottom: 1.25rem`. Files: `users-page.ts`, `roles-page.ts`, `confirm-dialog.ts`.
   - [x] **2.9E-2 — Tenant Mapping for Users:** API: `IUserRepository.GetUserTenantsAsync/AddUserTenantAsync/RemoveUserTenants`, `UserService.GetUserTenantsAsync/AssignTenantsAsync`, `UsersController GET/PUT /users/{id}/tenants`. Angular: `TenantApiService`, "Tenants" tab with CheckboxDropdown in users-page modal. 5 new unit tests. Tests: 117/117 + 13/13 ✅
   - [x] **2.9E-3 — Permissions Tree UI:** API: `MenuService.GetPermissionTreeAsync()` returns Module → Menu → Permissions tree, `MenusController GET /menus/permission-tree`. Angular: `TreeCheckbox` component (`libs/ui/src/lib/tree-checkbox/`) with expand/collapse, parent toggle, indeterminate state. `roles-page.ts` refactored to use TreeCheckbox + `MenuApiService.getPermissionTree()` instead of flat category list.
-  - [x] **2.9E-4 — Tenant Management Screen:** `tenants-page.ts` in `libs/feature/user-management/`. Grid: Name, Code, DB Provider, Status, Users, Created. Modal: create (Code/Name/Provider/ConnectionString) and edit (Name/Active). Actions: Edit, Migrate DB, Deactivate. Route wired in `user-management.routes.ts`. `TenantApiService` full CRUD + migrate.
+  - [x] **2.9E-4 — Tenant Management Screen:** `tenants-page.ts` in `libs/feature/user-management/`. Grid: Name, Code, DB Provider, Status, Users, Created. Modal: create (Code/Name/Provider/ConnectionString) and edit (Name/Active). Actions: Edit, Migrate DB, Deactivate. Route wired in `user-management.routes.ts`. `TenantApiService` full CRUD + migrate. — **`SUPERSEDED`:** this UI calls endpoints the backend now refuses (Create/Deactivate/Migrate ⇒ `405`; toggling Active ⇒ `400 Tenant.ActivationImmutable`). Scheduled for removal by frontend Tenant reconciliation **F-1…F-5** (`TEN-FE-01..05`), **not yet implemented**.
   - [x] **2.9E-5 — Login Redirect Bug:** `isStoredTokenValid()` in AuthStore decodes JWT + checks `exp` with 30s clock-skew. `LoginComponent.submit()` resets `hasNavigated = false`. Removed debug console.log.
   - [x] **2.9E-6 — User Management Unit Tests:** 77 tests across UsersPage (30), RolesPage (25), TenantsPage (22). Covers: CRUD, form validation, roles/tenants tabs, delete confirmation, toggle active, error handling. Removed `passWithNoTests` workaround.
   - [x] **2.9E-7 — CI Lint Fixes:** Added missing `.eslintrc.json` for user-management lib, missing peerDependencies in `libs/ui/package.json`, `label-has-associated-control` accessibility fixes (for/id pairs on all form labels). CI green: PR #17 merged.
@@ -419,7 +427,12 @@ All four items below shipped:
 
 **Phase 3 Prep (after grid decision):**
 - Sample seed users (Operator/Inspector/Viewer multi-tenant) — already partially done (sample users in IdentitySeeder for Dev), needs multi-tenant cross-assignment
-- Tenant dropdown UX — public list-tenants endpoint → Angular tenant selector at login
+- ~~Tenant dropdown UX — public list-tenants endpoint → Angular tenant selector at login~~
+  **WITHDRAWN 2026-09-22 — DO NOT IMPLEMENT.** `SUPERSEDED`. Cross-tenant enumeration via
+  `GET /tenants` is exactly the vulnerability closed by PR #14; a *public* variant would
+  reintroduce it unauthenticated. `GET /tenants` now returns the caller's own tenant only.
+  The login tenant is supplied by the client via `X-Tenant-Id`. Any future tenant-selector
+  UX must be designed against `docs/SATY_ERP_MASTER_EXECUTION_PLAN.md` §4 (frontend repo).
 - Phase 3: SignalR (job card status broadcasts, QA alerts, tenant-scoped hub groups)
 
 ## Important Notes
