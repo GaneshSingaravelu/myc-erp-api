@@ -7,6 +7,9 @@ using ERP.Infrastructure.Email;
 using ERP.Infrastructure.Tenant;
 using ERP.Persistence.Context;
 using ERP.Persistence.Interceptors;
+using ERP.Persistence.PostgreSql.Extensions;
+using ERP.Persistence.Providers;
+using ERP.Persistence.SqlServer.Extensions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Configuration;
@@ -104,17 +107,38 @@ public static class InfrastructureServiceExtensions
                 "MasterDb connection string is missing. " +
                 "Set ConnectionStrings:MasterDb in appsettings.Development.json or environment variables.");
 
+        // The deployment's database engine. Resolved HERE, outside the AddDbContext
+        // lambda, so a missing or unsupported Database:Provider fails at STARTUP rather
+        // than lazily on the first request that resolves a MasterDbContext.
+        // DatabaseProviderResolver fails closed — there is no fallback provider.
+        var masterProvider = DatabaseProviderResolver.Parse(
+            configuration[DatabaseProviderResolver.ConfigurationKey]);
+
         services.AddDbContext<MasterDbContext>((sp, options) =>
         {
-            options.UseSqlServer(masterConnectionString, sqlOptions =>
+            // Provider-specific EF configuration (migrations assembly, retry policy,
+            // command timeout) is owned by the two provider seams and deliberately NOT
+            // duplicated here — the same seams TenantDbContextFactory uses.
+            switch (masterProvider)
             {
-                sqlOptions.MigrationsAssembly("ERP.Persistence.SqlServer");
-                sqlOptions.EnableRetryOnFailure(
-                    maxRetryCount: 3,
-                    maxRetryDelay: TimeSpan.FromSeconds(5),
-                    errorNumbersToAdd: null);
-                sqlOptions.CommandTimeout(30);
-            });
+                case DatabaseProvider.SqlServer:
+                    options.UseSqlServerProvider(masterConnectionString);
+                    break;
+
+                case DatabaseProvider.PostgreSql:
+                    options.UsePostgreSqlProvider(masterConnectionString);
+                    break;
+
+                default:
+                    throw new InvalidOperationException(
+                        $"Unsupported database provider for the Master database: '{masterProvider}'. " +
+                        $"Supported providers: {DatabaseProviderResolver.SupportedProviders}");
+            }
+
+            // Both interceptors must survive provider switching. AuditableEntityInterceptor
+            // populates CreatedAt/LastModifiedAt/DeletedAt; DomainEventDispatcherInterceptor
+            // dispatches domain events on save. They are attached to the OUTER options
+            // builder, independently of which provider was selected above.
             options.AddInterceptors(
                 sp.GetRequiredService<AuditableEntityInterceptor>(),
                 sp.GetRequiredService<DomainEventDispatcherInterceptor>());
