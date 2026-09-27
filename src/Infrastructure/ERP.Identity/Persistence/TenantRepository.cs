@@ -19,14 +19,30 @@ public sealed class TenantRepository : ITenantRepository
     public Task<Tenant?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
         => _context.Set<Tenant>().FirstOrDefaultAsync(t => t.Id == id, cancellationToken);
 
+    /// <summary>
+    /// Looks up a tenant by code. The supplied value is canonicalized HERE — inside the
+    /// repository — so no caller can bypass the invariant by passing a raw value. Stored
+    /// codes are canonical too, so the comparison never depends on database collation.
+    /// </summary>
     public Task<Tenant?> GetByCodeAsync(string code, CancellationToken cancellationToken = default)
-        => _context.Set<Tenant>().FirstOrDefaultAsync(t => t.Code == code, cancellationToken);
+    {
+        var normalized = TenantCode.Normalize(code);
+        return _context.Set<Tenant>().FirstOrDefaultAsync(t => t.Code == normalized, cancellationToken);
+    }
 
     public Task<bool> ExistsByIdAsync(Guid id, CancellationToken cancellationToken = default)
         => _context.Set<Tenant>().AnyAsync(t => t.Id == id, cancellationToken);
 
+    /// <summary>
+    /// Existence check by code, canonicalized on the same terms as <see cref="GetByCodeAsync"/>.
+    /// This is what makes the duplicate-code check case-insensitive: an incoming <c>ACME</c>
+    /// is compared as <c>acme</c> and therefore collides with a stored <c>acme</c>.
+    /// </summary>
     public Task<bool> ExistsByCodeAsync(string code, CancellationToken cancellationToken = default)
-        => _context.Set<Tenant>().AnyAsync(t => t.Code == code, cancellationToken);
+    {
+        var normalized = TenantCode.Normalize(code);
+        return _context.Set<Tenant>().AnyAsync(t => t.Code == normalized, cancellationToken);
+    }
 
     public Task<Tenant?> GetByIdWithUserTenantsAsync(Guid id, CancellationToken cancellationToken = default)
         => _context.Set<Tenant>()

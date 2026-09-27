@@ -144,7 +144,7 @@ public abstract class RelationalIdentityTestBase : IDisposable
     protected static Tenant CreateTestTenant(string code = "ABC") =>
         new()
         {
-            Code = code,
+            Code = TenantCode.Normalize(code), // canonical form, exactly as production writes it
             Name = $"{code} Manufacturing",
             ConnectionString = $"Server=localhost;Database=ERP_{code}",
             DbProvider = "SqlServer",

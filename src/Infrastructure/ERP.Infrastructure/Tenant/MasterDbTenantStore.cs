@@ -31,11 +31,20 @@ public class MasterDbTenantStore : ITenantStore
         _context = context;
     }
 
+    /// <summary>
+    /// Resolves a tenant by its identifier (the tenant code from <c>X-Tenant-Id</c>).
+    ///
+    /// The identifier is canonicalized before the comparison so resolution does not depend
+    /// on the database's collation — SQL Server's default is case-insensitive, PostgreSQL's
+    /// is not, and a tenant must be the same tenant on both.
+    /// </summary>
     public async Task<TenantInfo?> GetByIdentifierAsync(string identifier)
     {
+        var normalized = TenantCode.Normalize(identifier);
+
         var tenant = await _context.Set<Identity.Entities.Tenant>()
             .AsNoTracking()
-            .FirstOrDefaultAsync(t => t.Code == identifier);
+            .FirstOrDefaultAsync(t => t.Code == normalized);
 
         return tenant is null ? null : MapToTenantInfo(tenant);
     }

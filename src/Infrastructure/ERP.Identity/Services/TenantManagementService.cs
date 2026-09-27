@@ -68,10 +68,25 @@ public class TenantManagementService : ITenantManagementService
     /// </summary>
     private Guid CurrentTenantId => _tenantProvider.GetCurrentTenant().Id;
 
+    /// <summary>
+    /// Creates a tenant record.
+    ///
+    /// <para><b>Unreachable over HTTP</b> since phase S-T1 withdrew the create route; it
+    /// survives as a dead primitive. Its behaviour is unchanged here apart from the tenant
+    /// code being canonicalized, which matters precisely because a dead primitive must not be
+    /// unsafe if it is ever re-exposed: an uppercase code persisted raw would be a second
+    /// tenant on PostgreSQL and an unresolvable one on either engine.</para>
+    /// </summary>
     public async Task<Result<TenantResponse>> CreateAsync(CreateTenantRequest request)
     {
+        // The canonical form is both what the duplicate check compares and what gets stored,
+        // so 'ACME' collides with a stored 'acme' instead of being accepted alongside it.
+        // The rejection message still echoes the code as supplied — the caller sent that, and
+        // reporting a silently rewritten value back to them would be confusing.
+        var code = TenantCode.Normalize(request.Code);
+
         // Validate unique code
-        if (await _tenants.ExistsByCodeAsync(request.Code))
+        if (await _tenants.ExistsByCodeAsync(code))
             return Result.Failure<TenantResponse>(
                 Error.Conflict("Tenant.CodeExists", $"Tenant code '{request.Code}' already exists."));
 
@@ -82,7 +97,7 @@ public class TenantManagementService : ITenantManagementService
 
         var tenant = new Tenant
         {
-            Code = request.Code,
+            Code = code,
             Name = request.Name,
             ConnectionString = request.ConnectionString,
             DbProvider = request.DbProvider,

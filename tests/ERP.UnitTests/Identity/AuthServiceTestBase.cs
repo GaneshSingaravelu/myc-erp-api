@@ -133,7 +133,7 @@ public abstract class AuthServiceTestBase : IDisposable
     {
         return new Tenant
         {
-            Code = code,
+            Code = TenantCode.Normalize(code), // canonical form, exactly as production writes it
             Name = $"{code} Manufacturing",
             ConnectionString = $"Server=localhost;Database=ERP_{code}",
             DbProvider = "SqlServer",
