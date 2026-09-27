@@ -1,6 +1,7 @@
 using ERP.Application.Abstractions.MultiTenancy;
 using ERP.Persistence.Context;
 using ERP.Persistence.PostgreSql.Extensions;
+using ERP.Persistence.Providers;
 using ERP.Persistence.SqlServer.Extensions;
 using ERP.SharedKernel.Results;
 using Microsoft.EntityFrameworkCore;
@@ -99,18 +100,63 @@ public class TenantProvisioningService : ITenantProvisioningService
 
     /// <summary>
     /// Build DbContextOptions for the given connection string and provider.
-    /// Same logic as TenantDbContextFactory but for one-off provisioning operations.
+    ///
+    /// FAILS CLOSED. An unrecognised provider throws; it is never treated as SQL Server.
+    /// This used to fall through to SQL Server for anything that was not "PostgreSql",
+    /// meaning a typo — or a null — would quietly provision the wrong engine. Like
+    /// TenantDbContextFactory, it now refuses rather than guessing; unlike that factory,
+    /// the value here arrives as a method argument, so the diagnostic points at the supplied
+    /// value instead of at the Database:Provider configuration key.
+    ///
+    /// Recognition itself is delegated to DatabaseProviderResolver so there is exactly one
+    /// provider vocabulary in the codebase. TryParse is used rather than Parse because
+    /// Parse's message instructs the operator to set Database:Provider, which would be
+    /// misleading for a value that was never read from there.
     /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when <paramref name="dbProvider"/> is null, blank or not a supported provider.
+    /// </exception>
     private static DbContextOptions<AppDbContext> BuildDbContextOptions(
         string connectionString, string dbProvider)
     {
+        if (!DatabaseProviderResolver.TryParse(dbProvider, out var provider))
+        {
+            throw new InvalidOperationException(
+                $"Invalid tenant database provider: {DescribeProviderValue(dbProvider)}. " +
+                $"Supported values: {DatabaseProviderResolver.SupportedProviders}");
+        }
+
         var optionsBuilder = new DbContextOptionsBuilder<AppDbContext>();
 
-        if (dbProvider.Equals("PostgreSql", StringComparison.OrdinalIgnoreCase))
-            optionsBuilder.UsePostgreSqlProvider(connectionString);
-        else
-            optionsBuilder.UseSqlServerProvider(connectionString);
+        switch (provider)
+        {
+            case DatabaseProvider.SqlServer:
+                optionsBuilder.UseSqlServerProvider(connectionString);
+                break;
+
+            case DatabaseProvider.PostgreSql:
+                optionsBuilder.UsePostgreSqlProvider(connectionString);
+                break;
+
+            default:
+                throw new InvalidOperationException(
+                    $"Unsupported tenant database provider: '{provider}'. " +
+                    $"Supported values: {DatabaseProviderResolver.SupportedProviders}");
+        }
 
         return optionsBuilder.Options;
     }
+
+    /// <summary>
+    /// Renders a rejected provider value for a diagnostic, distinguishing null from an
+    /// empty or whitespace string — otherwise all three read as an empty pair of quotes and
+    /// the operator cannot tell which was supplied.
+    /// </summary>
+    private static string DescribeProviderValue(string? dbProvider) => dbProvider switch
+    {
+        null => "null",
+        "" => "empty",
+        _ when string.IsNullOrWhiteSpace(dbProvider) => $"whitespace ('{dbProvider}')",
+        _ => $"'{dbProvider}'",
+    };
 }

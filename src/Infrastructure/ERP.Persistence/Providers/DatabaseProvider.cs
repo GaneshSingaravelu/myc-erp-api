@@ -73,16 +73,67 @@ public static class DatabaseProviderResolver
                 $"Supported providers: {SupportedProviders}");
         }
 
-        var trimmed = configuredValue.Trim();
+        if (!TryParse(configuredValue, out var provider))
+        {
+            throw new InvalidOperationException(
+                $"Unsupported database provider: '{configuredValue.Trim()}'. " +
+                $"Set {ConfigurationKey} to one of the supported providers: {SupportedProviders}");
+        }
+
+        return provider;
+    }
+
+    /// <summary>
+    /// Non-throwing counterpart to <see cref="Parse"/>, for callers whose provider value did
+    /// NOT come from <see cref="ConfigurationKey"/>.
+    ///
+    /// WHY THIS EXISTS
+    /// ===============
+    /// <see cref="Parse"/>'s diagnostics tell the operator to set <c>Database:Provider</c>,
+    /// which is correct when the value really was read from that key — and misleading when it
+    /// arrived some other way, such as a method argument or a per-tenant database column.
+    /// Such callers use this method and raise their own context-appropriate error, so the
+    /// codebase keeps ONE provider vocabulary while each boundary reports accurately.
+    ///
+    /// Recognition semantics are identical to <see cref="Parse"/>: surrounding whitespace is
+    /// trimmed and matching is case-insensitive on the supported names.
+    /// </summary>
+    /// <param name="value">
+    /// The candidate provider name. May be null, empty or whitespace.
+    /// </param>
+    /// <param name="provider">
+    /// The resolved provider when this method returns <c>true</c>.
+    ///
+    /// On <c>false</c> this is <see cref="DatabaseProvider.SqlServer"/> only because C#
+    /// requires the parameter to be assigned before returning — it is NOT a fallback and
+    /// callers MUST NOT use it. There is no meaningful default provider.
+    /// </param>
+    /// <returns>
+    /// <c>true</c> when <paramref name="value"/> names a supported provider; otherwise
+    /// <c>false</c>. Never throws.
+    /// </returns>
+    public static bool TryParse(string? value, out DatabaseProvider provider)
+    {
+        // Assigned because C# demands it before every return; meaningless when false.
+        provider = DatabaseProvider.SqlServer;
+
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        var trimmed = value.Trim();
 
         if (string.Equals(trimmed, nameof(DatabaseProvider.SqlServer), StringComparison.OrdinalIgnoreCase))
-            return DatabaseProvider.SqlServer;
+        {
+            provider = DatabaseProvider.SqlServer;
+            return true;
+        }
 
         if (string.Equals(trimmed, nameof(DatabaseProvider.PostgreSql), StringComparison.OrdinalIgnoreCase))
-            return DatabaseProvider.PostgreSql;
+        {
+            provider = DatabaseProvider.PostgreSql;
+            return true;
+        }
 
-        throw new InvalidOperationException(
-            $"Unsupported database provider: '{trimmed}'. " +
-            $"Set {ConfigurationKey} to one of the supported providers: {SupportedProviders}");
+        return false;
     }
 }
