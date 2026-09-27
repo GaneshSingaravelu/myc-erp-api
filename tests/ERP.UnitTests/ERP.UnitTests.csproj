@@ -30,6 +30,11 @@
          Asserting it needs the controller, not the service beneath it — the whole point of
          the withdrawal being that no service is reached at all. -->
     <ProjectReference Include="..\..\src\Host\ERP.Api\ERP.Api.csproj" />
+    <!-- DbMigrator reference: design-time provider selection is a contract of
+         MasterDbContextFactory, which lives in the migrator tool. Asserting that
+         Database:Provider drives the design-time engine — and fails closed — requires the
+         factory type itself. -->
+    <ProjectReference Include="..\..\tools\ERP.DbMigrator\ERP.DbMigrator.csproj" />
   </ItemGroup>
 
 </Project>
