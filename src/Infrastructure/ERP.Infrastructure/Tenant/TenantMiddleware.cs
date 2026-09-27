@@ -1,4 +1,5 @@
 using ERP.Application.Abstractions.MultiTenancy;
+using ERP.Identity.Entities;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
@@ -95,7 +96,18 @@ public class TenantMiddleware
         }
 
         // Step 2: Look up tenant (with caching to avoid hitting master DB every request)
-        var cacheKey = $"tenant:{tenantIdentifier}";
+        //
+        // The cache key uses the CANONICAL tenant code, not the raw header. Tenant resolution
+        // is case-insensitive, so "ACME" and "acme" are the same tenant — keying the cache on
+        // the raw header would give that one tenant an unbounded number of cache entries, one
+        // per casing a client happens to send, and each new casing would miss the cache and
+        // hit the master database. Normalizing here is the same canonicalization the store
+        // applies, so the key and the lookup can no longer disagree.
+        //
+        // The header itself is deliberately left untouched below: the value passed to the
+        // store, the values logged, and the JWT cross-check at Step 4 all still see exactly
+        // what the client sent.
+        var cacheKey = $"tenant:{TenantCode.Normalize(tenantIdentifier!)}";
         if (!cache.TryGetValue(cacheKey, out TenantInfo? tenant))
         {
             // Cache miss — query the tenant store (master database)

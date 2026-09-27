@@ -235,11 +235,11 @@ public class UserService_TenantScopedReadTests : RelationalIdentityTestBase
 
         var dto = Assert.Single(result.Value);
         Assert.Equal(a.Id, dto.TenantId);
-        Assert.Equal("AAA", dto.TenantCode);
+        Assert.Equal("aaa", dto.TenantCode);
 
         // Tenant B's existence, id, code and name are all withheld.
         Assert.DoesNotContain(result.Value, t => t.TenantId == b.Id);
-        Assert.DoesNotContain(result.Value, t => t.TenantCode == "BBB");
+        Assert.DoesNotContain(result.Value, t => t.TenantCode == "bbb");
     }
 
     [Fact] // R14

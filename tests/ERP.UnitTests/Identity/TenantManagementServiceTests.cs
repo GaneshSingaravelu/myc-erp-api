@@ -74,7 +74,10 @@ public class TenantManagementServiceTests : IdentityServiceTestBase
         var result = await _sut.CreateAsync(request);
 
         Assert.True(result.IsSuccess);
-        var stored = await Context.Set<Tenant>().FirstAsync(t => t.Code == "ACME");
+        // The request said "ACME"; the stored code is canonical. This is a write-side
+        // behaviour assertion, not a cosmetic one: a raw "ACME" row would be unresolvable
+        // through the (normalizing) lookup path on a case-sensitive database.
+        var stored = await Context.Set<Tenant>().FirstAsync(t => t.Code == "acme");
         Assert.Equal("Acme Industries", stored.Name);
         Assert.Equal("Server=.;Database=ERP_ACME", stored.ConnectionString);
     }

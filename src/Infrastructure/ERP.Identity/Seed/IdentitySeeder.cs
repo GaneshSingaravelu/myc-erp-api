@@ -175,7 +175,12 @@ public static class IdentitySeeder
             var tenant = new Tenant
             {
                 Id = id,
-                Code = tenantConfig["Identifier"] ?? "unknown",
+                // Canonicalized on write so the seeded code is the same value tenant
+                // resolution looks up, whatever casing this configuration file happens to
+                // use. The "unknown" sentinel for a missing Identifier is unchanged — it is
+                // already canonical — and a whitespace-only Identifier normalizes to empty
+                // rather than being stored verbatim. Neither case invents a usable identifier.
+                Code = TenantCode.Normalize(tenantConfig["Identifier"] ?? "unknown"),
                 Name = tenantConfig["Name"] ?? "Unknown Tenant",
                 ConnectionString = tenantConfig["ConnectionString"] ?? string.Empty,
                 DbProvider = tenantConfig["DbProvider"] ?? "SqlServer",

@@ -419,11 +419,11 @@ public class UserServiceTests : IdentityServiceTestBase
 
         Assert.True(result.IsSuccess);
         Assert.Single(result.Value);
-        Assert.Equal("ABC", result.Value[0].TenantCode);
+        Assert.Equal("abc", result.Value[0].TenantCode);
         Assert.True(result.Value[0].IsDefault);
 
         // The security assertion: XYZ's existence is not disclosed to ABC's admin.
-        Assert.DoesNotContain(result.Value, t => t.TenantCode == "XYZ");
+        Assert.DoesNotContain(result.Value, t => t.TenantCode == "xyz");
     }
 
     // ── AssignTenantsAsync ──
