@@ -12,7 +12,7 @@ public record CreateWorkOrderCommand(
     int Quantity,
     Guid ProcessTemplateId,
     Guid PlantId,
-    DateTime? DueDate,
+    DateOnly? DueDate,
     string? Notes) : ICommand<Guid>, IPlantScopedRequest;
 
 public class CreateWorkOrderHandler : ICommandHandler<CreateWorkOrderCommand, Guid>

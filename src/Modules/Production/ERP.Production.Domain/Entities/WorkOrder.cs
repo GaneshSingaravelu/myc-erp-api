@@ -39,7 +39,7 @@ public class WorkOrder : AuditableEntity
         int quantity,
         Guid processTemplateId,
         Guid plantId,
-        DateTime? dueDate = null,
+        DateOnly? dueDate = null,
         string? notes = null)
     {
         Guard.AgainstNullOrEmpty(orderNumber, nameof(orderNumber));
@@ -74,8 +74,20 @@ public class WorkOrder : AuditableEntity
     /// <summary>Current status in the lifecycle</summary>
     public WorkOrderStatus Status { get; private set; }
 
-    /// <summary>Target completion date</summary>
-    public DateTime? DueDate { get; private set; }
+    /// <summary>
+    /// Target completion date — a BUSINESS CALENDAR DATE, not an instant in time.
+    ///
+    /// <para><c>DateOnly?</c> rather than <c>DateTime?</c> because "due on the 1st of October"
+    /// is the same business fact in every time zone. Modelling it as a timestamp invited a
+    /// meaningless time-of-day component, and any later UTC normalisation could have shifted
+    /// the date across a midnight boundary and silently changed which day the order was due.
+    /// There is deliberately no time, no offset and no zone here to normalise.</para>
+    ///
+    /// <para>Stored as <c>date</c> on SQL Server and PostgreSQL alike, so the provider cannot
+    /// change the value's meaning. Contrast <see cref="ReleasedAt"/> and
+    /// <see cref="CompletedAt"/>, which are genuine instants and stay <c>DateTime</c>.</para>
+    /// </summary>
+    public DateOnly? DueDate { get; private set; }
 
     /// <summary>Optional notes or special instructions</summary>
     public string? Notes { get; private set; }
@@ -92,7 +104,7 @@ public class WorkOrder : AuditableEntity
     // ── DOMAIN METHODS ──────────────────────────────────────────
 
     /// <summary>Update work order details (only while in Draft status).</summary>
-    public void Update(string productName, int quantity, DateTime? dueDate, string? notes)
+    public void Update(string productName, int quantity, DateOnly? dueDate, string? notes)
     {
         if (Status != WorkOrderStatus.Draft)
             throw new InvalidOperationException("Cannot update a work order that is not in Draft status.");

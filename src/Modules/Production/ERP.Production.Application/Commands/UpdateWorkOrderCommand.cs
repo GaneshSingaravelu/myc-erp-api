@@ -10,7 +10,7 @@ public record UpdateWorkOrderCommand(
     Guid Id,
     string ProductName,
     int Quantity,
-    DateTime? DueDate,
+    DateOnly? DueDate,
     string? Notes) : ICommand;
 
 public class UpdateWorkOrderHandler : ICommandHandler<UpdateWorkOrderCommand>

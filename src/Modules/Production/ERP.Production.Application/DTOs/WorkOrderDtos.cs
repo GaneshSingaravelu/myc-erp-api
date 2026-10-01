@@ -4,6 +4,10 @@ namespace ERP.Production.Application.DTOs;
 
 // ── RESPONSE DTOs ────────────────────────────────────────────
 
+// DueDate is DateOnly? — a business calendar date, serialized as "2026-10-01" with no time
+// and no offset. ReleasedAt, CompletedAt, StartedAt and CreatedAt are genuine instants and
+// remain DateTime. See WorkOrder.DueDate for why the two are modelled differently.
+
 public record WorkOrderResponse(
     Guid Id,
     string OrderNumber,
@@ -12,7 +16,7 @@ public record WorkOrderResponse(
     Guid ProcessTemplateId,
     Guid PlantId,
     WorkOrderStatus Status,
-    DateTime? DueDate,
+    DateOnly? DueDate,
     string? Notes,
     DateTime? ReleasedAt,
     DateTime? CompletedAt,
@@ -26,7 +30,7 @@ public record WorkOrderListResponse(
     string ProductName,
     int Quantity,
     WorkOrderStatus Status,
-    DateTime? DueDate,
+    DateOnly? DueDate,
     DateTime? ReleasedAt,
     int JobCardCount,
     DateTime CreatedAt);
@@ -46,19 +50,23 @@ public record JobCardResponse(
 
 // ── REQUEST DTOs ─────────────────────────────────────────────
 
+// Breaking contract change: DueDate now accepts a date only. A timestamp-shaped value such as
+// "2026-10-01T14:30:00" is REJECTED by System.Text.Json rather than silently truncated to the
+// date, because truncating would have discarded a value the caller clearly meant.
+
 public record CreateWorkOrderRequest(
     string OrderNumber,
     string ProductName,
     int Quantity,
     Guid ProcessTemplateId,
     Guid PlantId,
-    DateTime? DueDate = null,
+    DateOnly? DueDate = null,
     string? Notes = null);
 
 public record UpdateWorkOrderRequest(
     string ProductName,
     int Quantity,
-    DateTime? DueDate,
+    DateOnly? DueDate,
     string? Notes);
 
 public record UpdateJobCardStatusRequest(
