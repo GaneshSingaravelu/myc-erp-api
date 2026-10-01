@@ -40,7 +40,14 @@ public class WorkOrderConfiguration : AuditableEntityConfiguration<WorkOrder>
             .HasConversion<string>()
             .HasMaxLength(20);
 
-        builder.Property(wo => wo.DueDate);
+        // DueDate is a business calendar date (DateOnly?), not an instant. "date" is stated
+        // explicitly rather than left to EF's default for DateOnly: it makes the intent
+        // reviewable at the mapping site, and a future convention change cannot silently
+        // re-widen the column back to a timestamp type. "date" is valid on SQL Server and
+        // PostgreSQL alike, so no provider-specific mapping is needed. Nullable is preserved
+        // by the property's own type — this call must not make it required.
+        builder.Property(wo => wo.DueDate)
+            .HasColumnType("date");
 
         builder.Property(wo => wo.Notes)
             .HasMaxLength(2000);
