@@ -110,7 +110,7 @@ All tables inheriting `AuditableEntity` include these columns:
 | Column | Type | Constraint | Purpose |
 |--------|------|------------|---------|
 | `Id` | `UNIQUEIDENTIFIER` | PK | Tenant internal ID |
-| `Code` | `NVARCHAR(50)` | UNIQUE, NOT NULL | Short code sent in X-Tenant-Id header (e.g., "ABC") |
+| `Code` | `NVARCHAR(50)` | UNIQUE, NOT NULL | Short code sent in X-Tenant-Id header. **Stored canonically: trimmed, lowercase** (e.g. `"dev-tenant"`) — see the canonical-form note below |
 | `Name` | `NVARCHAR(200)` | NOT NULL | Display name (e.g., "ABC Manufacturing Ltd") |
 | `ConnectionString` | `NVARCHAR(500)` | NOT NULL | Encrypted connection string to tenant DB |
 | `DbProvider` | `NVARCHAR(50)` | NOT NULL | "SqlServer" or "PostgreSql" |
@@ -121,6 +121,40 @@ All tables inheriting `AuditableEntity` include these columns:
 - This is the first table queried on every request (cached 30 min by TenantMiddleware)
 - ConnectionString should be encrypted at rest in production
 - DbProvider determines which EF Core provider to use
+
+#### `Code` — canonical form (`DB-10`, merged 2026-09-27)
+
+**`Tenant.Code` is a logically CASE-INSENSITIVE identifier whose canonical persisted
+representation is `Trim()` + `ToLowerInvariant()`** (invariant culture, so the result cannot
+depend on the server's locale).
+
+Every application write stores the canonical form and every application lookup compares the
+canonical form, so **tenant identity does not depend on the database's collation**. This
+matters because the two supported engines disagree: SQL Server's default
+`SQL_Latin1_General_CP1_CI_AS` is case-**insensitive** and was silently making mixed-case
+codes work, while PostgreSQL compares case-**sensitively** and the same request would not have
+resolved at all. The unique index on `Code` also only means what it should once writes are
+canonical — on a case-sensitive engine it would otherwise accept `acme` **and** `ACME` as two
+different tenants.
+
+> ⚠️ **Enforced by the application, NOT by the database.** There is deliberately **no**
+> `CHECK` constraint, **no** `NormalizedCode` column, **no** `citext`, and **no**
+> provider-specific collation. A row written outside the application — direct SQL, an import,
+> a manual fix — can therefore still hold a non-canonical code, and because lookups
+> canonicalize, **such a row is unreachable**. This is why the `DB-11` deployment precheck in
+> `TENANT_PROVISIONING.md` is mandatory.
+
+Narrative examples elsewhere in this document still show an uppercase `X-Tenant-Id: ABC`.
+Those remain **valid as request examples** — lookups normalize, so `ABC` resolves a stored
+`abc` — but they do **not** describe the stored value. Reconciling the example casing
+throughout is documentation debt for **P1-l**; it is not a defect in `DB-10`.
+
+**Separate, unfixed debt:** `Plant.Code` (tenant databases) has the *opposite* and
+*inconsistent* convention — `PlantCommands.cs` persists `ToUpperInvariant()` with **no
+trim**, while its duplicate check compares the **raw** request value. SQL Server's
+case-insensitive collation masks this today; **PostgreSQL would expose duplicate semantics**.
+Tracked as `DB-09`; **deliberately not fixed** by `DB-10` and awaiting its own scope decision.
+Do not copy the `Tenant.Code` helper onto it — the direction and the trim behaviour differ.
 
 ---
 
