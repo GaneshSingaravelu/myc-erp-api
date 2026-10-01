@@ -56,9 +56,68 @@ Tenants are declared in the `Tenants` section of `appsettings` / `appsettings.{E
 on startup by `IdentitySeeder.SeedTenantsAsync` if absent. Tenant onboarding is therefore
 a **deploy-time configuration change** today.
 
+> **The configured `Identifier` is canonicalized on write** — trimmed and lowercased — so the
+> seeded `Tenant.Code` is the same value tenant resolution looks up, whatever casing the
+> configuration file happens to use (`DB-10`). A configuration entry with **no** `Identifier`
+> still seeds the pre-existing `"unknown"` sentinel; that behaviour is unchanged.
+>
+> Note that the **base** `appsettings.json` template ships `"Identifier": "REPLACE_ME"`, which
+> is not canonical. It is a placeholder, not a live tenant: an operator who leaves it would now
+> seed `replace_me`. Reconciling the template is configuration debt for **P1-l** — it is not a
+> reason to change `DB-10`.
+
 > ⚠️ `Tenant.ConnectionString` is currently stored **in plaintext** in the Master DB
 > (`nvarchar(500)`, NOT NULL). The entity comment claiming it is encrypted at rest is
 > aspirational — no encryption is implemented. Tracked as `DB-05`.
+
+---
+
+## ⛔ MANDATORY PRE-DEPLOYMENT CHECK — `Tenant.Code` canonicality (`DB-11`)
+
+**Applies to:** any deployment of `DB-10` behaviour (backend `origin/main` `5650c0b` onward)
+against a Master database **whose `Tenants` rows have not already been verified**.
+
+**Why it is mandatory.** `DB-10` canonicalizes *reads* as well as writes. A row already stored
+non-canonically — say `Code = 'ACME'` — is therefore **unreachable** after deployment on a
+case-sensitive engine. The impact is not limited to a `404` at `TenantMiddleware`: token
+refresh re-resolves the `tenant_id` claim through the same normalizing lookup and compares by
+id, so a failure to resolve **revokes the live session**. Canonical form is enforced by the
+application, not the database (no `CHECK`, no `NormalizedCode`, no `citext`, no collation), so
+existing data is **not** guaranteed to satisfy the invariant.
+
+**What to check — READ-ONLY. Do not modify any row.**
+
+1. **Non-canonical codes** — any row where `Code` differs from `Trim()` + lowercase of itself.
+2. **Whitespace anomalies** — leading or trailing whitespace, including tab, CR, LF and
+   non-breaking space.
+3. **Canonical collisions** — two or more existing rows that collapse to the *same*
+   `Trim().ToLowerInvariant()` value.
+
+**If any of the three is found: STOP the deployment.**
+
+- **Do NOT normalize the data automatically.** Escalate for owner / data-owner review.
+- **Canonical collisions are tenant-identity decisions and must not be resolved
+  mechanically** — deciding that two rows are "really" one tenant, or which one keeps the
+  code, is a business decision with data-migration consequences.
+
+**The procedure must be provider-appropriate.** Compare in a way that is genuinely
+case-sensitive on the engine in question, so a case-insensitive collation cannot mask a
+difference. ⚠️ **Do not treat SQL Server's `COLLATE Latin1_General_BIN2` form as the universal
+procedure** — it was the local development instance's syntax, nothing more. **The invariant is
+the check, not any particular SQL.** The full provider-by-provider runbook is owed by **P1-l**.
+
+**Environments verified so far (read-only, 2026-09-27):**
+
+| Environment | Result |
+|---|---|
+| Local development `ERP_Master` (SQL Server) — `dev-tenant`, `pg-tenant`, `test-co` | **non-canonical rows 0 · whitespace anomalies 0 · canonical collisions 0 · zero rows modified** |
+| Local development PostgreSQL | **No Master schema or tenant rows exist** — the PostgreSQL migration lineage is still ZERO (`DB-02`) |
+
+> ⚠️ **This clears those two environments only.** No deployment pipeline, artefact, tag or
+> release branch exists in either repository, but **repository evidence cannot prove that no
+> hand-deployed UAT / production / shared database exists.** Deployment history outside
+> repository-controlled environments remains **UNKNOWN unless independently proven**. Run the
+> check; do not reason from the clean local result.
 
 ---
 

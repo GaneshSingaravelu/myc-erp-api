@@ -13,9 +13,19 @@ Supports multi-tenant, multi-database-provider architecture for manufacturing co
 **Databases:** SQL Server **and** PostgreSQL are first-class, chosen **per customer deployment**
 (Master/Identity DB *and* Tenant DBs use the same provider). Mixed providers within one
 deployment are not a primary requirement. Oracle is **not** in the approved scope.
-> ⚠️ **Current implementation gaps against this requirement:** `MasterDbContext` is hardcoded
-> to SQL Server (`InfrastructureServiceExtensions.cs:107-111`) and **no PostgreSQL migrations
-> exist**. Tracked as `DB-01`/`DB-02` in `docs/SATY_ERP_MASTER_EXECUTION_PLAN.md` (frontend repo).
+> **Provider selection works and fails closed; provider *creation* does not.** Status
+> 2026-10-01. `Database:Provider` (`SqlServer` or `PostgreSql`, env override
+> `Database__Provider`) is resolved by `DatabaseProviderResolver` for **both** Master runtime
+> and all three design-time factories; a missing or unrecognised value **throws at startup**
+> and is never silently treated as SQL Server (`DB-01`, `DB-04` — closed, PRs #16–#19).
+> `Tenant.Code` is canonicalized by the application as `Trim()` + `ToLowerInvariant()`, so
+> tenant identity does not depend on the engine's collation (`DB-10` — closed, PR #20).
+> ⚠️ **Still open:** **no PostgreSQL migrations exist** (`DB-02`), there is no parity
+> verification suite (`DB-03`), `tools/ERP.DbMigrator` remains a stub (`DB-08`, out of
+> Phase 1 scope), and a **read-only `Tenant.Code` canonicality check is mandatory before
+> deploying to any unverified Master database** (`DB-11` — see `docs/TENANT_PROVISIONING.md`).
+> All tracked in `docs/SATY_ERP_MASTER_EXECUTION_PLAN.md` §6.2 (frontend repo), which is
+> authoritative for status.
 **Developer:** Solo developer, freshers joining later
 
 ## Solution Structure
@@ -308,6 +318,7 @@ If `ngx-cerious-widgets` fails Angular 20 compatibility test:
   - [x] **2.9E-7 — CI Lint Fixes:** Added missing `.eslintrc.json` for user-management lib, missing peerDependencies in `libs/ui/package.json`, `label-has-associated-control` accessibility fixes (for/id pairs on all form labels). CI green: PR #17 merged.
 - [~] **Phase 2.9F — Grid Library Decision:**
   - [ ] **`ngx-cerious-widgets` compatibility test:** v1.0.15, MIT license, peerDeps `>=16.0.0` (should work with Angular 20). Also requires `write-excel-file` (MIT) as peer dependency. Install with `--legacy-peer-deps` and build-test. If compat fails → CDK table fallback.
+- [~] **Database provider parity foundation (master-plan Phase 1) — IN PROGRESS.** Merged backend slices, newest last: **P1-b** provider-selection resolver + fail-closed `Database:Provider` (PR #16, `5a290a8`) · **P1-c** Master runtime provider selection (PR #17, `34fcf46`) · **P1-d** Master design-time provider selection (PR #18, `4d26645`) — closes `DB-01` · **P1-e** provider-default divergence, tenant design-time + provisioning fail closed (PR #19, `727a6577`) — closes `DB-04` · **P1-f** `Tenant.Code` canonicalization (PR #20, `5650c0b`) — closes `DB-10`. **Next: P1-g** `WorkOrder.DueDate` → `DateOnly?` — **NOT STARTED, not implementation-authorized.** Still open: `DB-02` PostgreSQL migration lineages (**still ZERO**), `DB-03` parity verification, `DB-11` deployment precheck. ⛔ `DB-08` (`ERP.DbMigrator`) is **not** Phase 1 — do not modify `Program.cs`. Slice ledger and approval gates: `docs/SATY_ERP_MASTER_EXECUTION_PLAN.md` §8 Phase 1 (frontend repo).
 - [ ] Phase 3 Preparation: Sample seed users (Operator, Inspector, Viewer with multi-tenant assignments) + Tenant dropdown UX
 - [ ] Phase 3: SignalR integration (job card status broadcasts, QA alerts, tenant-scoped hub groups)
 - [ ] Phase 4: Reporting (open-source, Angular-compatible)

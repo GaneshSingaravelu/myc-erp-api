@@ -1080,6 +1080,19 @@ Request with header X-Tenant-Id: abc-mfg
 ```
 File: `src/Infrastructure/ERP.Infrastructure/Tenant/TenantMiddleware.cs`
 
+> **`Tenant.Code` is a case-insensitive identifier (`DB-10`, merged 2026-09-27).** The header
+> may arrive in any casing, with or without surrounding whitespace; resolution canonicalizes
+> it to `Trim()` + `ToLowerInvariant()` **in the application**, so a tenant is the same tenant
+> on SQL Server (case-insensitive collation) and PostgreSQL (case-sensitive). The cache key is
+> canonical too, so one tenant cannot occupy a cache entry per casing.
+>
+> What did **not** change: the missing/blank-header guard still returns `400`
+> `TENANT_HEADER_MISSING` before any lookup; the store still receives the **raw** header
+> value; the 30-minute cache TTL is unchanged; and the `X-Tenant-Id` / `tenant_id`
+> cross-check remains `StringComparison.OrdinalIgnoreCase`. Canonical form is enforced by the
+> application, **not** by the database — see `DATABASE_ARCHITECTURE.md` and the `DB-11`
+> deployment precheck in `TENANT_PROVISIONING.md`.
+
 **3. ITenantProvider** -- provides tenant info to downstream services:
 ```csharp
 // File: src/Infrastructure/ERP.Infrastructure/Tenant/HttpContextTenantProvider.cs
@@ -1464,17 +1477,30 @@ A: Middleware catches exceptions from the entire pipeline (including other middl
 
 Multi-database provider support means the same application code runs against either database engine. **SQL Server and PostgreSQL are both first-class, chosen per customer deployment** — Master/Identity DB *and* Tenant DBs use the same provider (approved decision `ARCH-DB-03`). Mixing providers *within one deployment* is technically possible via `Tenant.DbProvider` but is **not a primary requirement** (`ARCH-DB-04`).
 
-> **⚠️ CURRENT IMPLEMENTATION GAPS — this section describes the intent, not today's reality.**
+> **⚠️ PROVIDER SELECTION NOW WORKS; PROVIDER *CREATION* DOES NOT.** Status 2026-10-01.
+>
+> **Closed — provider selection is implemented and fails closed:**
+>
+> | Closed | How |
+> |---|---|
+> | **`DB-01` — Master provider selection**, runtime **and** design-time | `DatabaseProviderResolver` reads `Database:Provider` (`SqlServer` or `PostgreSql`) and both sites switch to the existing provider seams. Runtime resolves **outside** the `AddDbContext` lambda, so a missing or unrecognised value fails at **startup**, not on first request. Design-time (`MasterDbContextFactory`) layers `.AddEnvironmentVariables()`, so `Database__Provider` selects the engine for `dotnet ef` without editing tracked config |
+> | **`DB-04` — provider-default divergence** | `AppDbContextFactory` now reads `Database:Provider` instead of `Tenants[0].DbProvider`, and `TenantProvisioningService` validates through `DatabaseProviderResolver.TryParse`. **Every silent SQL Server fallback is gone**; unknown providers throw |
+> | **`DB-10` — `Tenant.Code` canonical semantics** | Tenant identity is canonicalized by the application (`Trim()` + `ToLowerInvariant()`), so it no longer depends on the engine's collation. See §16 and `DATABASE_ARCHITECTURE.md` |
+>
+> **Still open — this section's intent is not yet fully reality:**
 >
 > | Gap | Evidence |
 > |---|---|
-> | **`DB-01` — Master DB is SQL-Server-only.** Two hardcoded call sites, no provider switch | `InfrastructureServiceExtensions.cs:109` (runtime) and `tools/ERP.DbMigrator/MasterDbContextFactory.cs:43` (design-time) both call `UseSqlServer(...)` unconditionally |
-> | **`DB-02` — PostgreSQL has no migrations.** All four migration files live under `ERP.Persistence.SqlServer` | `ERP.Persistence.PostgreSql/` contains zero migration files, yet its `MigrationsAssembly` points at itself |
-> | **`DB-08` — `ERP.DbMigrator` is a stub** | `tools/ERP.DbMigrator/Program.cs` prints four lines and exits; it parses no arguments |
+> | **`DB-02` — PostgreSQL has no migrations.** All four migration classes live under `ERP.Persistence.SqlServer` | `ERP.Persistence.PostgreSql/Migrations` **does not exist**, yet its `MigrationsAssembly` points at itself. **An engine can be selected but a PostgreSQL database still cannot be created** |
+> | **`DB-03` — no parity verification suite** | Runtime, migration, seed and upgrade are not yet verified on both engines |
+> | **`DB-11` — deployment canonicality precheck not yet a runbook** | Because `DB-10` canonicalizes reads, a non-canonically stored `Tenant.Code` is unreachable. A **read-only** check is mandatory before deploying to any unverified Master DB — see `TENANT_PROVISIONING.md` |
+> | **`DB-08` — `ERP.DbMigrator` is a stub** | `tools/ERP.DbMigrator/Program.cs` prints four lines and exits; it parses no arguments. **Deliberately untouched** — out of scope for Phase 1 |
 >
-> `AppDbContextFactory` (tenant, design-time) **does** switch correctly on `DbProvider`.
-> These are implementation gaps against an approved requirement, **not open questions**.
-> Tracked in `docs/SATY_ERP_MASTER_EXECUTION_PLAN.md` §6.2 (frontend repo).
+> `TenantDbContextFactory` (tenant, runtime) already threw on an unknown provider and was
+> **deliberately left unmodified**. These are implementation gaps against an approved
+> requirement, **not open questions**. Tracked in
+> `docs/SATY_ERP_MASTER_EXECUTION_PLAN.md` §6.2 (frontend repo), which is authoritative for
+> status.
 
 **Analogy:** A universal remote control. It can operate different TV brands (Samsung, LG, Sony) without changing the remote itself. You just tell it which TV to control. Our application code is the remote; the database providers (SQL Server, PostgreSQL) are the TVs. TenantDbContextFactory tells the remote which TV to talk to.
 
