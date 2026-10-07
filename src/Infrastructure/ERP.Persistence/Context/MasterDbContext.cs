@@ -1,3 +1,4 @@
+using ERP.Persistence.Conversions;
 using ERP.SharedKernel.Entities;
 using Microsoft.EntityFrameworkCore;
 
@@ -31,6 +32,26 @@ public class MasterDbContext : DbContext
     /// The Identity assembly registers its configurations here.
     /// </summary>
     public static readonly List<System.Reflection.Assembly> ConfigurationAssemblies = [];
+
+    /// <summary>
+    /// Every persisted DateTime in this database is a UTC instant, enforced in one place.
+    ///
+    /// <para>Applied as a CONVENTION rather than per property: it covers every mapped
+    /// <c>DateTime</c>/<c>DateTime?</c> including ones added later, so a new timestamp cannot
+    /// be silently left out. <c>DateOnly</c> is a different CLR type and is deliberately not
+    /// matched — <c>WorkOrder.DueDate</c> keeps its <c>date</c> column.</para>
+    ///
+    /// <para>Store types are unchanged on both providers, so this adds no migration. See
+    /// <see cref="Conversions.UtcDateTime"/> for why non-UTC writes fail instead of being
+    /// converted.</para>
+    /// </summary>
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
+    {
+        base.ConfigureConventions(configurationBuilder);
+
+        configurationBuilder.Properties<DateTime>().HaveConversion<UtcDateTimeConverter>();
+        configurationBuilder.Properties<DateTime?>().HaveConversion<UtcNullableDateTimeConverter>();
+    }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

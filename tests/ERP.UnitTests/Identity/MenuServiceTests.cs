@@ -77,7 +77,12 @@ public class MenuServiceTests : IdentityServiceTestBase
             IsVisible = isVisible,
             IsEnabled = true,
             FeatureFlag = featureFlag,
-            ParentMenuId = parentMenuId
+            ParentMenuId = parentMenuId,
+            // Menu.CreatedAt has no `= DateTime.UtcNow` initializer (unlike UserSession,
+            // AppUserRole, UserTenant and friends), so a fixture that omits it persists
+            // 0001-01-01 with Kind=Unspecified — which the UTC convention refuses. Production
+            // always sets it: IdentitySeeder assigns DateTime.UtcNow when seeding menus.
+            CreatedAt = DateTime.UtcNow,
         };
     }
 
@@ -153,7 +158,7 @@ public class MenuServiceTests : IdentityServiceTestBase
     public async Task GetMyMenus_WhenFeatureFlagDisabledGlobally_HidesMenu()
     {
         var userId = await SeedUserWithPermissionsAsync();
-        await PersistAsync(new FeatureFlag { Code = "PROD_V2", Name = "Production V2", IsEnabled = false });
+        await PersistAsync(new FeatureFlag { Code = "PROD_V2", Name = "Production V2", IsEnabled = false, CreatedAt = DateTime.UtcNow });
         await SeedModuleAsync("PRODUCTION", MakeMenu("WO_BETA", featureFlag: "PROD_V2"));
 
         var result = await _sut.GetMyMenusAsync(userId, tenantId: null);
@@ -167,7 +172,7 @@ public class MenuServiceTests : IdentityServiceTestBase
     {
         var userId = await SeedUserWithPermissionsAsync();
         var tenant = await PersistAsync(CreateTestTenant("ACME"));
-        var flag = await PersistAsync(new FeatureFlag { Code = "PROD_V2", Name = "Production V2", IsEnabled = false });
+        var flag = await PersistAsync(new FeatureFlag { Code = "PROD_V2", Name = "Production V2", IsEnabled = false, CreatedAt = DateTime.UtcNow });
         await PersistAsync(new TenantFeatureFlag
         {
             TenantId = tenant.Id,
@@ -188,7 +193,7 @@ public class MenuServiceTests : IdentityServiceTestBase
     {
         var userId = await SeedUserWithPermissionsAsync();
         var tenant = await PersistAsync(CreateTestTenant("ACME"));
-        var flag = await PersistAsync(new FeatureFlag { Code = "QA_DASHBOARD", Name = "QA", IsEnabled = true });
+        var flag = await PersistAsync(new FeatureFlag { Code = "QA_DASHBOARD", Name = "QA", IsEnabled = true, CreatedAt = DateTime.UtcNow });
         await PersistAsync(new TenantFeatureFlag
         {
             TenantId = tenant.Id,

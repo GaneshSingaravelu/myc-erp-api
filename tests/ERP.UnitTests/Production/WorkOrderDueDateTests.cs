@@ -1,6 +1,8 @@
 using System.Reflection;
 using System.Text.Json;
+using ERP.Application.Abstractions.Identity;
 using ERP.Persistence.Context;
+using ERP.Persistence.Interceptors;
 using ERP.Persistence.SqlServer.Extensions;
 using ERP.Persistence.SqlServer.Migrations.AppDb;
 using ERP.Production.Application.Commands;
@@ -11,6 +13,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
+using Moq;
 
 namespace ERP.UnitTests.Production;
 
@@ -374,8 +377,16 @@ public class WorkOrderDueDateRelationalTests : IDisposable
         _connection = new SqliteConnection("DataSource=:memory:");
         _connection.Open();
 
+        // AuditableEntityInterceptor fills CreatedAt/LastModifiedAt/DeletedAt with
+        // DateTime.UtcNow, exactly as production does on every context it builds. Required here
+        // because the UTC convention refuses to persist a default(DateTime) audit timestamp.
+        var currentUser = new Mock<ICurrentUserService>();
+        currentUser.SetupGet(c => c.UserId).Returns(Guid.NewGuid().ToString());
+        currentUser.SetupGet(c => c.TenantId).Returns((string?)null);
+
         _context = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>()
             .UseSqlite(_connection)
+            .AddInterceptors(new AuditableEntityInterceptor(currentUser.Object))
             .Options);
 
         _context.Database.EnsureCreated();
