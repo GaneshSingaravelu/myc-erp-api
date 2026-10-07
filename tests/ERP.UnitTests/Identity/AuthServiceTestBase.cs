@@ -1,6 +1,7 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using ERP.Application.Abstractions.Email;
+using ERP.Application.Abstractions.Identity;
 using ERP.Identity.Abstractions;
 using ERP.Identity.Abstractions.Persistence;
 using ERP.Identity.Configuration;
@@ -8,6 +9,7 @@ using ERP.Identity.Entities;
 using ERP.Identity.Persistence;
 using ERP.Identity.Services;
 using ERP.Persistence.Context;
+using ERP.Persistence.Interceptors;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
@@ -55,9 +57,21 @@ public abstract class AuthServiceTestBase : IDisposable
 
     protected AuthServiceTestBase()
     {
+        // The AuditableEntityInterceptor fills CreatedAt/LastModifiedAt/DeletedAt with
+        // DateTime.UtcNow, and production registers it on every context it builds
+        // (InfrastructureServiceExtensions for Master, TenantDbContextFactory per tenant).
+        // IdentityServiceTestBase and RelationalIdentityTestBase already wire it; this base did
+        // not, so audit timestamps stayed default(DateTime). The UTC convention rightly refuses
+        // to persist that, which is how the omission surfaced. Wiring it makes this fixture
+        // match the context production actually builds.
+        var currentUser = new Mock<ICurrentUserService>();
+        currentUser.SetupGet(c => c.UserId).Returns(Guid.NewGuid().ToString());
+        currentUser.SetupGet(c => c.TenantId).Returns((string?)null);
+
         // Each test gets its own InMemory DB (unique name prevents cross-test leakage)
         var options = new DbContextOptionsBuilder<MasterDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .AddInterceptors(new AuditableEntityInterceptor(currentUser.Object))
             .Options;
 
         Context = new MasterDbContext(options);
