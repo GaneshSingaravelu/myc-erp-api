@@ -1,0 +1,22 @@
+<!--
+  ERP.ParityCheck: live SQL Server / PostgreSQL provider-parity harness (P1-k Phase 2 / DB-03).
+
+  A console tool rather than xUnit tests, deliberately: live checks need explicit
+  authorization, real endpoints and guaranteed cleanup of disposable databases, none of
+  which belong in the unit suite. Offline parity is covered by ProviderParityTests.
+
+  No package references: everything comes through the existing projects. ERP.DbMigrator
+  supplies the design-time factories, both provider migration assemblies, Identity
+  (IdentitySeeder, TenantRepository) and the Production/Workflow module configurations.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ERP.DbMigrator\ERP.DbMigrator.csproj" />
+  </ItemGroup>
+
+</Project>
