@@ -34,5 +34,6 @@
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/ERP.DbMigrator/ERP.DbMigrator.csproj" />
+    <Project Path="tools/ERP.ParityCheck/ERP.ParityCheck.csproj" />
   </Folder>
 </Solution>
