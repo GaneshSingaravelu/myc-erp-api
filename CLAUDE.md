@@ -13,17 +13,20 @@ Supports multi-tenant, multi-database-provider architecture for manufacturing co
 **Databases:** SQL Server **and** PostgreSQL are first-class, chosen **per customer deployment**
 (Master/Identity DB *and* Tenant DBs use the same provider). Mixed providers within one
 deployment are not a primary requirement. Oracle is **not** in the approved scope.
-> **Provider selection works and fails closed; provider *creation* does not.** Status
-> 2026-10-01. `Database:Provider` (`SqlServer` or `PostgreSql`, env override
+> **Provider selection and creation work; full parity is partially open.** Status
+> 2026-10-10. `Database:Provider` (`SqlServer` or `PostgreSql`, env override
 > `Database__Provider`) is resolved by `DatabaseProviderResolver` for **both** Master runtime
 > and all three design-time factories; a missing or unrecognised value **throws at startup**
 > and is never silently treated as SQL Server (`DB-01`, `DB-04` — closed, PRs #16–#19).
 > `Tenant.Code` is canonicalized by the application as `Trim()` + `ToLowerInvariant()`, so
 > tenant identity does not depend on the engine's collation (`DB-10` — closed, PR #20).
-> ⚠️ **Still open:** **no PostgreSQL migrations exist** (`DB-02`), there is no parity
-> verification suite (`DB-03`), `tools/ERP.DbMigrator` remains a stub (`DB-08`, out of
-> Phase 1 scope), and a **read-only `Tenant.Code` canonicality check is mandatory before
-> deploying to any unverified Master database** (`DB-11` — see `docs/TENANT_PROVISIONING.md`).
+> PostgreSQL has its own migration baselines for Master and tenant DBs (`DB-02` — closed,
+> PRs #24–#25). Provider parity is verified by `ProviderParityTests` and `tools/ERP.ParityCheck`
+> (PR #26) but `DB-03` stays **PARTIALLY OPEN**: incremental-upgrade parity (`L-10`) is deferred.
+> ⚠️ **Still open:** `DB-09` `Plant.Code` provider divergence (documented, unresolved);
+> `tools/ERP.DbMigrator` remains a stub (`DB-08`); and a **read-only `Tenant.Code`
+> canonicality check must be run before deploying to any unverified Master database**
+> (`DB-11` — runbook in `docs/TENANT_PROVISIONING.md`).
 > All tracked in `docs/SATY_ERP_MASTER_EXECUTION_PLAN.md` §6.2 (frontend repo), which is
 > authoritative for status.
 **Developer:** Solo developer, freshers joining later
@@ -42,7 +45,7 @@ ERP.slnx                              ← .NET 10 SDK format, all projects targe
 ├── src/Infrastructure/
 │   ├── ERP.Persistence/                           ← AppDbContext, Repository<T>, UnitOfWork, Interceptors
 │   ├── ERP.Persistence.SqlServer/                 ← SQL Server provider + migrations assembly
-│   ├── ERP.Persistence.PostgreSql/                ← PostgreSQL provider; migrations assembly is EMPTY (DB-02)
+│   ├── ERP.Persistence.PostgreSql/                ← PostgreSQL provider + migrations (MasterDb + AppDb baselines)
 │   ├── ERP.Infrastructure/                        ← TenantMiddleware, TenantDbContextFactory, CacheService
 │   ├── ERP.Identity/                              ← Services + repositories + entities (JWT, AppUser, AppRole, Permission)
 │   │   ├── Abstractions/Persistence/              ← IUserRepository, IRoleRepository, IPermissionRepository,
@@ -63,7 +66,8 @@ ERP.slnx                              ← .NET 10 SDK format, all projects targe
 │   │   └── Identity/                              ← AuthServiceTestBase + IdentityServiceTestBase + 99 tests
 │   └── ERP.Architecture.Tests/                    ← 13 NetArchTest guards (incl. IdentityServices_Should_Not_Depend_On_EfCore)
 ├── tools/
-│   └── ERP.DbMigrator/                            ← Console app for applying migrations
+│   ├── ERP.DbMigrator/                            ← Console app for applying migrations
+│   └── ERP.ParityCheck/                           ← SQL Server/PostgreSQL parity harness (see "Parity harness" below)
 └── docs/
     ├── DESIGN_PATTERNS.md                         ← 20 patterns explained with interview tips
     ├── ARCHITECTURE.md                            ← 20 concepts explained with code examples
@@ -318,7 +322,7 @@ If `ngx-cerious-widgets` fails Angular 20 compatibility test:
   - [x] **2.9E-7 — CI Lint Fixes:** Added missing `.eslintrc.json` for user-management lib, missing peerDependencies in `libs/ui/package.json`, `label-has-associated-control` accessibility fixes (for/id pairs on all form labels). CI green: PR #17 merged.
 - [~] **Phase 2.9F — Grid Library Decision:**
   - [ ] **`ngx-cerious-widgets` compatibility test:** v1.0.15, MIT license, peerDeps `>=16.0.0` (should work with Angular 20). Also requires `write-excel-file` (MIT) as peer dependency. Install with `--legacy-peer-deps` and build-test. If compat fails → CDK table fallback.
-- [~] **Database provider parity foundation (master-plan Phase 1) — IN PROGRESS.** Merged backend slices, newest last: **P1-b** provider-selection resolver + fail-closed `Database:Provider` (PR #16, `5a290a8`) · **P1-c** Master runtime provider selection (PR #17, `34fcf46`) · **P1-d** Master design-time provider selection (PR #18, `4d26645`) — closes `DB-01` · **P1-e** provider-default divergence, tenant design-time + provisioning fail closed (PR #19, `727a6577`) — closes `DB-04` · **P1-f** `Tenant.Code` canonicalization (PR #20, `5650c0b`) — closes `DB-10`. **Next: P1-g** `WorkOrder.DueDate` → `DateOnly?` — **NOT STARTED, not implementation-authorized.** Still open: `DB-02` PostgreSQL migration lineages (**still ZERO**), `DB-03` parity verification, `DB-11` deployment precheck. ⛔ `DB-08` (`ERP.DbMigrator`) is **not** Phase 1 — do not modify `Program.cs`. Slice ledger and approval gates: `docs/SATY_ERP_MASTER_EXECUTION_PLAN.md` §8 Phase 1 (frontend repo).
+- [~] **Database provider parity foundation (master-plan Phase 1) — P1-b – P1-k MERGED; P1-l (documentation reconciliation) IN PROGRESS.** Merged backend slices, newest last: **P1-b** provider-selection resolver + fail-closed `Database:Provider` (PR #16, `5a290a8`) · **P1-c** Master runtime provider selection (PR #17, `34fcf46`) · **P1-d** Master design-time provider selection (PR #18, `4d26645`) — closes `DB-01` · **P1-e** provider-default divergence, tenant design-time + provisioning fail closed (PR #19, `727a6577`) — closes `DB-04` · **P1-f** `Tenant.Code` canonicalization (PR #20, `5650c0b`) — closes `DB-10` · **P1-g** `WorkOrder.DueDate` → `DateOnly?` (PR #22, `c9791f6`) · **P1-h** UTC `DateTime` persistence (PR #23, `0cad99c`) · **P1-i** PostgreSQL MasterDb baseline (PR #24, `0f183b0`) · **P1-j** PostgreSQL tenant baseline (PR #25, `08db90b`) — closes `DB-02` · **P1-k** provider parity verification (PR #26, `fac345c`) — `DB-03` **PARTIALLY OPEN** (`L-10` upgrade parity deferred). Still open: `DB-09` `Plant.Code` divergence (documented, unresolved); `DB-11` precheck must be **run** per environment (runbook in `docs/TENANT_PROVISIONING.md`). ⛔ `DB-08` (`ERP.DbMigrator`) is **not** Phase 1 — do not modify `Program.cs`. Slice ledger and approval gates: `docs/SATY_ERP_MASTER_EXECUTION_PLAN.md` §8 Phase 1 (frontend repo).
 - [ ] Phase 3 Preparation: Sample seed users (Operator, Inspector, Viewer with multi-tenant assignments) + Tenant dropdown UX
 - [ ] Phase 3: SignalR integration (job card status broadcasts, QA alerts, tenant-scoped hub groups)
 - [ ] Phase 4: Reporting (open-source, Angular-compatible)
@@ -456,12 +460,13 @@ All four items below shipped:
 - Domain events are dispatched AFTER SaveChanges succeeds (via DomainEventDispatcherInterceptor)
 - Soft delete is automatic — EF Core global query filter excludes IsDeleted=true records
 - `BaseEntity.Id` uses `init` accessor — settable in object initializers, immutable after construction
-- Identity seeder runs on startup — creates default admin (admin/Admin@123), 4 roles, 28 permissions
+- Identity seeder runs on startup — creates default admin (user `admin`; password from `SeedSettings:DefaultAdminPassword` — not documented), 4 roles, 28 permissions
 - Workflow engine is table-based (no Elsa) — clients modify flow via CRUD on ProcessTemplate/ProcessStep
 - `AuditLog` entity lives in `ERP.SharedKernel.Entities` (not Production.Domain). Its EF config is in `ERP.Persistence/Configurations/AuditLogConfiguration.cs`. `AuditLogInterceptor` populates it — wired in `TenantDbContextFactory` only (not MasterDbContext, since AuditLogs are tenant-DB only). `MasterDbContext.OnModelCreating` explicitly excludes `AuditLogConfiguration` via predicate filter on `ApplyConfigurationsFromAssembly` to prevent the tenant-only table from appearing in Master DB migrations.
 - Pipeline behavior execution order: `ValidationBehavior` → `PlantAuthorizationBehavior` → `LoggingBehavior` → Handler. Plant auth only fires for commands implementing `IPlantScopedRequest` (in `ERP.Application.Abstractions.CQRS`).
 - `ICurrentUserService` now exposes `IpAddress` and `UserAgent` (added for `AuditLogInterceptor`).
-- **AppDbContext migrations must use `tools/ERP.DbMigrator` as the startup project** — `ERP.Api` fails at design time because `HttpContext` is unavailable. Command: `dotnet ef migrations add <Name> --context AppDbContext --project src/Infrastructure/ERP.Persistence.SqlServer --startup-project tools/ERP.DbMigrator --output-dir Migrations/AppDb`
+- **AppDbContext migrations must use `tools/ERP.DbMigrator` as the startup project** — `ERP.Api` fails at design time because `HttpContext` is unavailable. Command: `dotnet ef migrations add <Name> --context AppDbContext --project src/Infrastructure/ERP.Persistence.SqlServer --startup-project tools/ERP.DbMigrator --output-dir Migrations/AppDb`. For PostgreSQL use `--project src/Infrastructure/ERP.Persistence.PostgreSql` with `Database__Provider=PostgreSql` (and `ConnectionStrings__MasterDb` / `Tenants__0__ConnectionString` as env overrides); output dirs are `Migrations/MasterDb` and `Migrations/AppDb`.
+- **Parity harness** (`tools/ERP.ParityCheck`): `--self-test` / `--simulate` are fully offline. `--live` requires explicit authorization **plus** `ERP_PARITY_SQLSERVER` / `ERP_PARITY_POSTGRESQL` server-level endpoints, and only ever creates/drops the approved `ERP_P1k_Parity_*_Throwaway` databases (protected names and pre-existing targets are refused). Never point it at a real database; never commit its evidence. Results and accepted differences: `docs/DATABASE_ARCHITECTURE.md` → *Provider Mapping*.
 
 ## CI/CD Status
 

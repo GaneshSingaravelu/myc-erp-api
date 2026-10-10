@@ -63,8 +63,9 @@ a **deploy-time configuration change** today.
 >
 > Note that the **base** `appsettings.json` template ships `"Identifier": "REPLACE_ME"`, which
 > is not canonical. It is a placeholder, not a live tenant: an operator who leaves it would now
-> seed `replace_me`. Reconciling the template is configuration debt for **P1-l** — it is not a
-> reason to change `DB-10`.
+> seed `replace_me`. Reconciling the template is recorded configuration debt — **P1-l is
+> documentation-only and changes no configuration**, so the template fix needs a separately
+> approved configuration change. It is not a reason to change `DB-10`.
 
 > ⚠️ `Tenant.ConnectionString` is currently stored **in plaintext** in the Master DB
 > (`nvarchar(500)`, NOT NULL). The entity comment claiming it is encrypted at rest is
@@ -102,16 +103,191 @@ existing data is **not** guaranteed to satisfy the invariant.
 
 **The procedure must be provider-appropriate.** Compare in a way that is genuinely
 case-sensitive on the engine in question, so a case-insensitive collation cannot mask a
-difference. ⚠️ **Do not treat SQL Server's `COLLATE Latin1_General_BIN2` form as the universal
-procedure** — it was the local development instance's syntax, nothing more. **The invariant is
-the check, not any particular SQL.** The full provider-by-provider runbook is owed by **P1-l**.
+difference. **The invariant is the check, not any particular SQL.** The provider-by-provider
+runbook below (P1-l) is how to run it.
 
-**Environments verified so far (read-only, 2026-09-27):**
+### DB-11 runbook — provider by provider
+
+#### The invariant
+
+A stored code is canonical when `Code == TenantCode.Normalize(Code)` under **ordinal**
+comparison, where `Normalize` (`ERP.Identity/Entities/TenantCode.cs`) is:
+
+- `string.IsNullOrWhiteSpace(code)` → `""` — an empty canonical form is never a valid stored code;
+- otherwise `code.Trim().ToLowerInvariant()`.
+
+**Supported character domain: unrestricted.** No validator, regular expression or
+allowed-character rule constrains `Tenant.Code` — only `MaxLength(50)`, `IsRequired()` and the
+unique index `IX_Tenants_Code`. This runbook does **not** introduce an ASCII-only (or any other)
+character rule; that would be a separate product decision.
+
+#### Why a database query alone is not a complete check
+
+Provider-side `LOWER()` / `TRIM()` are **not** equivalent to the .NET contract over arbitrary
+Unicode. Measured offline (.NET 10.0.5, P1-l; no database involved):
+
+| .NET contract | Database primitives |
+|---|---|
+| `Trim()` removes the **25** characters `char.IsWhiteSpace` accepts in the BMP — tab, LF, CR, VT, FF, U+0085, U+00A0, U+1680, U+2000–U+200A, U+2028, U+2029, U+202F, U+205F, U+3000 and space | SQL Server `LTRIM`/`RTRIM` and PostgreSQL `btrim(x)` remove **only U+0020** by default |
+| `ToLowerInvariant()` applies .NET's invariant mappings — e.g. U+0130 (İ) is left **unchanged**, U+212A (Kelvin sign) → `k` | `LOWER()` follows the engine's collation / locale tables, which vary by engine, version and collation (e.g. Turkish rules lower `I` to `ı`) |
+
+Over **printable ASCII (U+0020–U+007E)** the .NET side reduces to: the only whitespace is U+0020,
+and the only characters `ToLowerInvariant()` changes are `A`–`Z` (each to its lowercase). Provider
+equivalence over that domain is therefore decided by two things checked **at execution time**:
+that the stored data lies inside the domain (Step 2) and that the provider primitives behave as
+required under an explicitly pinned binary / `C` collation (Step 1). **Equivalence outside that
+domain is not claimed** — data outside it must use Step 3b.
+
+> These queries were authored and reviewed statically in P1-l. **They have not been executed
+> against any live database.** Step 1 is what validates them on the target engine.
+
+#### Step 0 — environment verification record (read-only)
+
+Record before checking, for the evidence table at the end:
+
+```sql
+-- SQL Server (connected to the Master database)
+SELECT @@VERSION AS engine_version,
+       SERVERPROPERTY('Collation')                  AS server_collation,
+       DATABASEPROPERTYEX(DB_NAME(), 'Collation')   AS database_collation,
+       (SELECT c.collation_name FROM sys.columns c
+         WHERE c.object_id = OBJECT_ID(N'dbo.Tenants') AND c.name = N'Code') AS code_column_collation;
+```
+
+```sql
+-- PostgreSQL (connected to the Master database)
+SELECT version() AS engine_version;
+SELECT datcollate, datctype, datlocprovider FROM pg_database WHERE datname = current_database();
+SELECT collation_name FROM information_schema.columns
+ WHERE table_schema = 'public' AND table_name = 'Tenants' AND column_name = 'Code';  -- NULL = database default
+```
+
+#### Step 1 — validate the comparison primitives (literals only; no table access)
+
+Every column must be `1` / `true`, or the SQL screening in Step 3a **must not be used**.
+
+```sql
+-- SQL Server: binary collation pinned explicitly — never the database/server default
+SELECT
+  CASE WHEN LOWER(N'ABCDEFGHIJKLMNOPQRSTUVWXYZ' COLLATE Latin1_General_100_BIN2)
+            = N'abcdefghijklmnopqrstuvwxyz' COLLATE Latin1_General_100_BIN2 THEN 1 ELSE 0 END AS lower_ok,
+  CASE WHEN N'A' COLLATE Latin1_General_100_BIN2 = N'a' COLLATE Latin1_General_100_BIN2
+       THEN 0 ELSE 1 END                                                               AS compare_case_sensitive,
+  -- DATALENGTH, not =: SQL Server's = ignores trailing spaces even under a binary collation
+  CASE WHEN DATALENGTH(LTRIM(RTRIM(N'  x  '))) = DATALENGTH(N'x') THEN 1 ELSE 0 END AS trim_ok;
+```
+
+```sql
+-- PostgreSQL: deterministic "C" collation pinned explicitly — never the database default
+SELECT lower('ABCDEFGHIJKLMNOPQRSTUVWXYZ' COLLATE "C") = ('abcdefghijklmnopqrstuvwxyz' COLLATE "C") AS lower_ok,
+       ('A' COLLATE "C") <> ('a' COLLATE "C")                                                       AS compare_case_sensitive,
+       btrim('  x  ') = 'x'                                                                         AS trim_ok;
+```
+
+#### Step 2 — domain gate
+
+Count rows containing **any** character outside printable ASCII (U+0020–U+007E), including
+tab, CR, LF and every non-ASCII character:
+
+```sql
+-- SQL Server
+SELECT COUNT(*) AS rows_outside_printable_ascii
+  FROM dbo.Tenants
+ WHERE Code COLLATE Latin1_General_100_BIN2 LIKE N'%[^ -~]%';
+```
+
+```sql
+-- PostgreSQL
+SELECT count(*) AS rows_outside_printable_ascii
+  FROM "Tenants"
+ WHERE ("Code" COLLATE "C") ~ '[^ -~]';
+```
+
+- **0** and Step 1 all-true → Step 3a is a complete check for this data; Step 3b remains available.
+- **Greater than 0**, or any Step 1 failure → **Step 3b is mandatory.** Do not use Step 3a's result.
+
+#### Step 3a — SQL screening (valid only when Step 1 passes and Step 2 = 0)
+
+```sql
+-- SQL Server
+-- (1) non-canonical or empty. DATALENGTH is required: SQL Server's = / <> ignore TRAILING
+--     spaces even under a binary collation, so 'acme ' <> 'acme' is FALSE.
+SELECT Id, Code
+  FROM dbo.Tenants
+ WHERE Code COLLATE Latin1_General_100_BIN2
+         <> LOWER(LTRIM(RTRIM(Code)) COLLATE Latin1_General_100_BIN2) COLLATE Latin1_General_100_BIN2
+    OR DATALENGTH(Code) <> DATALENGTH(LTRIM(RTRIM(Code)))
+    OR DATALENGTH(LTRIM(RTRIM(Code))) = 0;
+
+-- (2) whitespace anomalies (leading/trailing space)
+SELECT Id FROM dbo.Tenants WHERE DATALENGTH(Code) <> DATALENGTH(LTRIM(RTRIM(Code)));
+
+-- (3) canonical collision groups
+SELECT LOWER(LTRIM(RTRIM(Code)) COLLATE Latin1_General_100_BIN2) AS canonical, COUNT(*) AS rows_in_group
+  FROM dbo.Tenants
+ GROUP BY LOWER(LTRIM(RTRIM(Code)) COLLATE Latin1_General_100_BIN2)
+HAVING COUNT(*) > 1;
+```
+
+```sql
+-- PostgreSQL (lower() takes its collation from its INPUT, so COLLATE goes inside the call)
+-- (1) non-canonical or empty
+SELECT "Id", "Code"
+  FROM "Tenants"
+ WHERE ("Code" COLLATE "C") <> lower(btrim("Code") COLLATE "C")
+    OR btrim("Code") = '';
+
+-- (2) whitespace anomalies (leading/trailing space)
+SELECT "Id" FROM "Tenants" WHERE octet_length("Code") <> octet_length(btrim("Code"));
+
+-- (3) canonical collision groups
+SELECT lower(btrim("Code") COLLATE "C") AS canonical, count(*) AS rows_in_group
+  FROM "Tenants"
+ GROUP BY lower(btrim("Code") COLLATE "C")
+HAVING count(*) > 1;
+```
+
+#### Step 3b — application-equivalent verification (authoritative for any data)
+
+When Step 2 finds anything outside printable ASCII, or Step 1 fails — and optionally always:
+
+1. **Read-only export of `Id` and `Code` only** (`SELECT Id, Code FROM dbo.Tenants` /
+   `SELECT "Id", "Code" FROM "Tenants"`). No other column is needed; nothing is written back.
+2. Evaluate every row with the application's own `TenantCode.Normalize`, from the **same build**
+   that is about to be deployed, using **ordinal** comparison:
+
+   ```csharp
+   // rows: the read-only (Id, Code) export
+   var nonCanonical = rows.Where(r => !string.Equals(TenantCode.Normalize(r.Code), r.Code, StringComparison.Ordinal));
+   var whitespace   = rows.Where(r => !string.Equals(r.Code.Trim(), r.Code, StringComparison.Ordinal));
+   var empty        = rows.Where(r => TenantCode.Normalize(r.Code).Length == 0);
+   var collisions   = rows.GroupBy(r => TenantCode.Normalize(r.Code), StringComparer.Ordinal)
+                          .Where(g => g.Count() > 1);
+   ```
+
+3. **Limitation, stated:** `ToLowerInvariant()` follows the casing data of the .NET runtime that
+   executes it. Run Step 3b on the **same .NET version** as the deployment target and record that
+   version; a different runtime could disagree on rare characters.
+
+This is an operator procedure, not new tooling.
+
+#### Step 4 — stop rule and evidence
+
+- **Any** non-canonical row, whitespace anomaly, empty canonical form or collision group →
+  **STOP the deployment** and escalate (rules above). **No automatic repair** — not by script,
+  migration or seeder.
+- Record one row per environment:
+
+| Environment | Engine / version | DB / column collation | Step 1 | Step 2 rows | Method (3a / 3b) | Non-canonical | Whitespace | Empty | Collision groups | Rows modified | Date / operator |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| *(fill in)* | | | | | | | | | | **0** | |
+
+**Environments verified so far (read-only):**
 
 | Environment | Result |
 |---|---|
-| Local development `ERP_Master` (SQL Server) — `dev-tenant`, `pg-tenant`, `test-co` | **non-canonical rows 0 · whitespace anomalies 0 · canonical collisions 0 · zero rows modified** |
-| Local development PostgreSQL | **No Master schema or tenant rows exist** — the PostgreSQL migration lineage is still ZERO (`DB-02`) |
+| Local development `ERP_Master` (SQL Server), 2026-09-27 — `dev-tenant`, `pg-tenant`, `test-co` | **non-canonical rows 0 · whitespace anomalies 0 · canonical collisions 0 · zero rows modified** (checked before this runbook existed, with a binary comparison; all three codes are printable ASCII) |
+| Local development PostgreSQL (`ERP_PG_Dev`), 2026-10-10 | **Contains no tables** (0 relations, read-only P1-k preflight) — there is no PostgreSQL Master database with tenant rows locally. PostgreSQL migration lineages **do** exist now (P1-i / P1-j); this is an absence of deployed data, not of migrations. |
 
 > ⚠️ **This clears those two environments only.** No deployment pipeline, artefact, tag or
 > release branch exists in either repository, but **repository evidence cannot prove that no
@@ -146,8 +322,7 @@ dotnet ef database update \
   --context AppDbContext \
   --connection "Server=localhost;Database=ERP_ABC;Trusted_Connection=true;TrustServerCertificate=true;"
 
-# For PostgreSQL tenant
-#   ⚠️ DOES NOT WORK TODAY — see the warning below.
+# For PostgreSQL tenant — see the note below for the verified command shape
 dotnet ef database update \
   --project src/Infrastructure/ERP.Persistence.PostgreSql \
   --startup-project src/Host/ERP.Api \
@@ -155,14 +330,29 @@ dotnet ef database update \
   --connection "Host=localhost;Database=erp_abc;Username=erp_user;Password=yourpassword"
 ```
 
-> **⚠️ PostgreSQL migrations do not exist (`DB-02`).** `ERP.Persistence.PostgreSql` contains
-> **zero migration files** — all four migrations in the repository live under
-> `ERP.Persistence.SqlServer`. The PostgreSQL command above would therefore apply nothing.
-> `appsettings.Development.json` seeds `pg-tenant` with `DbProvider: "PostgreSql"`: it can be
-> resolved and connected to, but its schema cannot be created by this codebase.
+> **PostgreSQL migration lineages exist (`DB-02` complete).** `ERP.Persistence.PostgreSql`
+> carries one PostgreSQL-native baseline per context — `Migrations/MasterDb/20261007022731_InitialMasterBaseline`
+> (P1-i) and `Migrations/AppDb/20261008162932_InitialTenantBaseline` (P1-j) — each representing
+> the current model. They deliberately do **not** replay SQL Server's history (2 Master + 3 tenant
+> migrations under `ERP.Persistence.SqlServer`).
 >
-> PostgreSQL parity for **both** Master and Tenant databases is an **approved product
-> requirement** (`ARCH-DB-03`), not an open question. This is an implementation gap.
+> **Verified command shape** (P1-i / P1-j / P1-k): the design-time factories live in
+> `tools/ERP.DbMigrator`, and the provider comes from the deployment setting, supplied through
+> environment variables so no tracked configuration is edited:
+>
+> ```bash
+> Database__Provider=PostgreSql \
+> Tenants__0__ConnectionString="<tenant connection string>" \
+> dotnet ef database update \
+>   --project src/Infrastructure/ERP.Persistence.PostgreSql \
+>   --startup-project tools/ERP.DbMigrator \
+>   --context AppDbContext
+> ```
+>
+> The `--startup-project src/Host/ERP.Api … --connection` form above was **not** the form verified
+> in P1-i–P1-k. Both baselines were applied from empty and rolled Down/Up on real PostgreSQL 17.9
+> by the P1-k parity harness (`tools/ERP.ParityCheck`). Incremental-upgrade parity (`L-10`) is
+> **not** yet verified: no incremental PostgreSQL migration exists.
 
 ### Step 3: Register Tenant in Master DB
 
@@ -210,7 +400,7 @@ dotnet run --project src/Host/ERP.Api
 curl -X POST https://localhost:5001/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -H "X-Tenant-Id: ABC" \
-  -d '{"userName": "abc_admin", "password": "Admin@123"}'
+  -d '{"userName": "abc_admin", "password": "<ADMIN_PASSWORD_FROM_SECURE_CONFIGURATION>"}'
 ```
 
 ---

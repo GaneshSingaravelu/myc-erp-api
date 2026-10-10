@@ -72,6 +72,7 @@ erp_api/
 |
 +-- tools/
 |   +-- ERP.DbMigrator/                          # Standalone tool for running DB migrations
+|   +-- ERP.ParityCheck/                         # SQL Server/PostgreSQL parity harness (--self-test offline; --live gated)
 |
 +-- tests/
     +-- ERP.UnitTests/                           # Unit tests
@@ -1477,24 +1478,26 @@ A: Middleware catches exceptions from the entire pipeline (including other middl
 
 Multi-database provider support means the same application code runs against either database engine. **SQL Server and PostgreSQL are both first-class, chosen per customer deployment** — Master/Identity DB *and* Tenant DBs use the same provider (approved decision `ARCH-DB-03`). Mixing providers *within one deployment* is technically possible via `Tenant.DbProvider` but is **not a primary requirement** (`ARCH-DB-04`).
 
-> **⚠️ PROVIDER SELECTION NOW WORKS; PROVIDER *CREATION* DOES NOT.** Status 2026-10-01.
+> **PROVIDER SELECTION AND CREATION WORK; FULL PARITY IS PARTIALLY OPEN.** Status 2026-10-10
+> (Phase 1 slices P1-b – P1-k merged; P1-l documentation reconciliation in progress).
 >
-> **Closed — provider selection is implemented and fails closed:**
+> **Closed — provider selection, creation and from-empty parity:**
 >
 > | Closed | How |
 > |---|---|
 > | **`DB-01` — Master provider selection**, runtime **and** design-time | `DatabaseProviderResolver` reads `Database:Provider` (`SqlServer` or `PostgreSql`) and both sites switch to the existing provider seams. Runtime resolves **outside** the `AddDbContext` lambda, so a missing or unrecognised value fails at **startup**, not on first request. Design-time (`MasterDbContextFactory`) layers `.AddEnvironmentVariables()`, so `Database__Provider` selects the engine for `dotnet ef` without editing tracked config |
 > | **`DB-04` — provider-default divergence** | `AppDbContextFactory` now reads `Database:Provider` instead of `Tenants[0].DbProvider`, and `TenantProvisioningService` validates through `DatabaseProviderResolver.TryParse`. **Every silent SQL Server fallback is gone**; unknown providers throw |
 > | **`DB-10` — `Tenant.Code` canonical semantics** | Tenant identity is canonicalized by the application (`Trim()` + `ToLowerInvariant()`), so it no longer depends on the engine's collation. See §16 and `DATABASE_ARCHITECTURE.md` |
+> | **`DB-02` — PostgreSQL migration lineages** | One PostgreSQL-native baseline per context in `ERP.Persistence.PostgreSql/Migrations`: `MasterDb/InitialMasterBaseline` (P1-i, PR #24) and `AppDb/InitialTenantBaseline` (P1-j, PR #25). They do not replay SQL Server's history |
 >
-> **Still open — this section's intent is not yet fully reality:**
+> **Partially open / still open:**
 >
 > | Gap | Evidence |
 > |---|---|
-> | **`DB-02` — PostgreSQL has no migrations.** All four migration classes live under `ERP.Persistence.SqlServer` | `ERP.Persistence.PostgreSql/Migrations` **does not exist**, yet its `MigrationsAssembly` points at itself. **An engine can be selected but a PostgreSQL database still cannot be created** |
-> | **`DB-03` — no parity verification suite** | Runtime, migration, seed and upgrade are not yet verified on both engines |
-> | **`DB-11` — deployment canonicality precheck not yet a runbook** | Because `DB-10` canonicalizes reads, a non-canonically stored `Tenant.Code` is unreachable. A **read-only** check is mandatory before deploying to any unverified Master DB — see `TENANT_PROVISIONING.md` |
-> | **`DB-08` — `ERP.DbMigrator` is a stub** | `tools/ERP.DbMigrator/Program.cs` prints four lines and exits; it parses no arguments. **Deliberately untouched** — out of scope for Phase 1 |
+> | **`DB-03` — provider parity: PARTIALLY OPEN** | Implemented by P1-k (PR #26): 59 offline `ProviderParityTests` and the live harness `tools/ERP.ParityCheck` (29 PASS, 4 EXPECTED DIFFERENCE, 0 FAIL, 0 SKIPPED, 1 DEFERRED). Still open: **`L-10` incremental-upgrade parity is DEFERRED** — no incremental PostgreSQL migration exists. Accepted differences and debt: `DATABASE_ARCHITECTURE.md` → *Provider Mapping* |
+> | **`DB-09` — `Plant.Code` provider divergence** | No application canonicalization: case-insensitive on SQL Server, case-sensitive on PostgreSQL. Documented, **not resolved** |
+> | **`DB-11` — deployment canonicality precheck** | Runbook documented (P1-l) in `TENANT_PROVISIONING.md`. Because `DB-10` canonicalizes reads, a non-canonically stored `Tenant.Code` is unreachable, so the **read-only** check must still be **run** before deploying to any unverified Master DB |
+> | **`DB-08` — `ERP.DbMigrator` is a stub** | `tools/ERP.DbMigrator/Program.cs` prints four lines and exits; it parses no arguments. It is used only as the `dotnet ef` design-time startup project. **Deliberately untouched** |
 >
 > `TenantDbContextFactory` (tenant, runtime) already threw on an unknown provider and was
 > **deliberately left unmodified**. These are implementation gaps against an approved
@@ -1508,9 +1511,16 @@ Multi-database provider support means the same application code runs against eit
 
 **Separate provider projects** keep database-specific code isolated:
 ```
-ERP.Persistence.SqlServer/    --> SQL Server-specific config + migrations (4 migration files)
-ERP.Persistence.PostgreSql/   --> PostgreSQL-specific config; migrations assembly is EMPTY (DB-02)
+ERP.Persistence.SqlServer/    --> SQL Server-specific config + migrations (2 Master + 3 tenant)
+ERP.Persistence.PostgreSql/   --> PostgreSQL-specific config + migrations (1 Master + 1 tenant baseline)
 ```
+
+**Parity verification (P1-k).** `tests/ERP.UnitTests/Persistence/ProviderParityTests.cs` compares
+the two providers' models offline. `tools/ERP.ParityCheck` is a console harness:
+`--self-test` and `--simulate` run fully **offline**; `--live` needs explicit authorization
+**and** server-level endpoints in `ERP_PARITY_SQLSERVER` / `ERP_PARITY_POSTGRESQL`, and it only
+ever creates and drops the approved disposable databases (`ERP_P1k_Parity_*_Throwaway`), refusing
+protected names and pre-existing targets. A missing endpoint is reported SKIPPED, never PASS.
 
 **SQL Server provider:**
 ```csharp
