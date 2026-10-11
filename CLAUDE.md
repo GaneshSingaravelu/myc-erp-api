@@ -286,6 +286,14 @@ If `ngx-cerious-widgets` fails Angular 20 compatibility test:
 
 ## Phase Status
 
+> ⚠️ **LEGACY NUMBERING.** The "Phase 0 / 1 / 2 / 2.5x / 3" labels in this section (and in
+> *Phase 2 Audit Gaps* and *Suggested Next Action* below) are this repository's **original
+> build history**. They are **not** the programme phases. Programme phases, status and
+> approval gates are defined only in the frontend repo's
+> `docs/SATY_ERP_MASTER_EXECUTION_PLAN.md` (there, Phase 1 = database provider parity and
+> Phase 2 = Company model), which **overrides** anything here. "Next: Phase 3 Prep" below is
+> historical and authorizes nothing. Fresh-session reading order: frontend `docs/HANDOVER.md`.
+
 - [x] Phase 0: Solution structure, SharedKernel, Persistence, Infrastructure, Identity, Notifications, API Host
 - [x] Phase 1: Identity APIs (login, register, role/permission management) + Workflow engine (ProcessTemplate, ProcessStep CRUD)
 - [~] Phase 2: Production module — WorkOrder & JobCard entities, CRUD commands/queries, controllers — **PARTIAL: see "Phase 2 Audit Gaps" below**
@@ -470,10 +478,10 @@ All four items below shipped:
 
 ## CI/CD Status
 
-- **API (.NET 10):** GitHub Actions workflow — `dotnet build ERP.slnx` → `dotnet test ERP.slnx`. NuGet cache enabled. Permissions `contents: read`. Currently green: 117/117 unit tests + 13/13 architecture guards.
-- **UI (Angular):** GitHub Actions workflow — `npm ci` → `npx nx run-many --target lint --all` → `npx nx run-many --target test --all`. npm cache enabled. Currently green: 130+ tests across 18 projects (77 in user-management alone).
+- **API (.NET 10):** GitHub Actions workflow — `dotnet build ERP.slnx` → `dotnet test ERP.slnx`. NuGet cache enabled. Permissions `contents: read`. **Last recorded counts: 846/846 unit + 13/13 architecture** (P1-k verification, PR #26, merge `fac345c`). CI on `main` `564a796` (PR #28) was green; it does not publish counts here, so re-run `dotnet test ERP.slnx` for current numbers. *(The earlier "117/117" figure is historical.)*
+- **UI (Angular):** GitHub Actions workflow — `npm ci` → `npx nx run-many --target lint --all` → `npx nx run-many --target test --all`. npm cache enabled. CI on frontend `main` `84190e2` (PR #75) was green. *(The "130+ tests across 18 projects" figure is **historical** — no current count is recorded; re-run the test target for current numbers.)*
 - **`.gitattributes`** enforces LF line endings repo-wide (eliminates CRLF noise on Windows contributors).
-- **Recommended next:** Branch protection on `main` requiring CI green + 1 review.
+- **Recommended next:** Branch protection on `main` requiring CI green + 1 review. *(As of 2026-10-11 the GitHub API reports branch protection is unavailable for these repositories on the current plan, so reviews and green CI are enforced by process, not by GitHub.)*
 
 ## Design Patterns (20 Used)
 
