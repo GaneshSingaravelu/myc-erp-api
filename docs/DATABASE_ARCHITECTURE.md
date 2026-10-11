@@ -730,6 +730,26 @@ PascalCase on PostgreSQL, no snake_case convention.
   interceptor; and `AuditableEntityInterceptor` overrides only `SavingChangesAsync`, so a
   synchronous `SaveChanges()` would bypass stamping (0 synchronous call sites at the P1-h review).
 
+### Unresolved technical risk — shared-static `ConfigurationAssemblies` race
+
+Recorded at the Phase 1 conditional closure (2026-10-11). **Not fixed; no issue ID assigned.**
+
+- **Where:** `src/Infrastructure/ERP.Persistence/Context/AppDbContext.cs`.
+  `AppDbContext.ConfigurationAssemblies` is a shared **static mutable** `List<Assembly>`
+  (line 71), and `OnModelCreating` **enumerates** it (line 100). Module service extensions and
+  design-time option builders add to it.
+- **Failure mode:** if the list is mutated while another thread is enumerating it, enumeration
+  throws `InvalidOperationException` (*Collection was modified*).
+- **Observed:** the Claude execution session saw this exception in unit-test runs during
+  Phase 1 and reproduced it with the P1-i changes excluded, so it **predates P1-i**.
+- **Production impact:** **not established.** Registration normally happens at startup, but no
+  analysis or runtime evidence has been recorded either way.
+- **Relation to the historical 66/67 repeatability failure** (one full-suite run with two
+  unidentified failing tests): **plausible but UNPROVEN.** The failing tests were not captured,
+  so the root cause of that failure remains **UNKNOWN**.
+- **Going forward:** any repeated test verification should retain TRX logs and the failing-test
+  identities, so a recurrence can be attributed.
+
 ---
 
 ## Seeded Data
