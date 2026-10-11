@@ -8,10 +8,11 @@
 1. [Multi-Tenant Database Design](#multi-tenant-database-design)
 2. [Master DB Tables](#master-db-tables-erp_master)
 3. [Tenant DB Tables](#tenant-db-tables-erp_tenantcode)
-4. [Seeded Data](#seeded-data)
-5. [Entity Relationship Diagrams](#entity-relationship-diagrams)
-6. [Data Flow](#data-flow)
-7. [Concrete Example: Admin User Flow](#concrete-example-admin-user-flow)
+4. [Provider Mapping: SQL Server and PostgreSQL](#provider-mapping-sql-server-and-postgresql)
+5. [Seeded Data](#seeded-data)
+6. [Entity Relationship Diagrams](#entity-relationship-diagrams)
+7. [Data Flow](#data-flow)
+8. [Concrete Example: Admin User Flow](#concrete-example-admin-user-flow)
 
 ---
 
@@ -658,6 +659,79 @@ Each tenant database contains these tables. They are identical in schema across 
 
 ---
 
+## Provider Mapping: SQL Server and PostgreSQL
+
+Both providers run the **same EF Core model**. Column types in the tables above are written in
+SQL Server terms; this section is the PostgreSQL translation and the record of where the two
+engines behave differently. PostgreSQL has its own migration lineages — one baseline per context
+(P1-i `InitialMasterBaseline`, P1-j `InitialTenantBaseline`) — rather than a replay of SQL
+Server's history.
+
+Verified offline by `ProviderParityTests` (59 tests) and live by `tools/ERP.ParityCheck` (P1-k:
+29 PASS, 4 EXPECTED DIFFERENCE, 0 FAIL, 0 SKIPPED, 1 DEFERRED; evidence run
+`phase2b2-20261010-160321`, retained outside the repository).
+
+### Store-type mapping
+
+| SQL Server | PostgreSQL | Master columns | Tenant columns |
+|---|---|---|---|
+| `uniqueidentifier` | `uuid` | 42 | 32 |
+| `datetime2` | `timestamp with time zone` | 26 | 19 |
+| `bit` | `boolean` | 20 | 12 |
+| `int` | `integer` | 3 | 5 |
+| `nvarchar(max)` | `text` | 3 | 3 |
+| `nvarchar(n)` | `character varying(n)` — same `n` | 46 | 24 |
+| `date` | `date` | 0 | 1 (`WorkOrders.DueDate`) |
+
+Table, column, key, index and foreign-key names are identical on both engines: quoted
+PascalCase on PostgreSQL, no snake_case convention.
+
+### Accepted provider differences (by design)
+
+| Area | SQL Server | PostgreSQL | Why it is accepted |
+|---|---|---|---|
+| Timestamp precision | `datetime2(7)`: 100 ns ticks preserved | `timestamptz`: microseconds; sub-µs ticks dropped (Δ = 7 ticks observed) | UTC-instant semantics (P1-h) hold on both; µs-aligned values round-trip exactly |
+| `DateOnly.MinValue` / `MaxValue` | stored `0001-01-01` / `9999-12-31` | Npgsql stores `-infinity` / `infinity` | The application value round-trips exactly on both |
+| `Tenant.Code` comparison | default collation `SQL_Latin1_General_CP1_CI_AS`: case-insensitive | deterministic `en_US.utf8` (libc): case-sensitive | P1-f canonicalization makes the **application lookup** identical on both. Case sensitivity is measured per environment, not assumed (collation-aware `L-8`) |
+| Nullable unique index `IX_Roles_NormalizedName_TenantId` | filtered `[TenantId] IS NOT NULL` | no filter; NULLs are distinct | Same application semantics, verified live (`L-6`): duplicate names with a NULL tenant are allowed; a duplicate within one tenant is rejected |
+
+### Unresolved debt (documented, not fixed)
+
+- **`DB-09` — `Plant.Code` provider divergence.** No application canonicalization exists. On SQL
+  Server (case-insensitive) `P1K-PLANT-CASE` and `p1k-plant-case` collide under the unique index
+  and look each other up; on PostgreSQL both are accepted and lookups are case-sensitive.
+  Behaviour therefore depends on the provider. Fixing it needs a separately approved slice.
+- **`Tenant.Code` written outside the application** (direct SQL, imports) is not canonicalized on
+  either provider. The `DB-11` pre-deployment runbook in `TENANT_PROVISIONING.md` is the control.
+- **`L-10` — incremental-upgrade parity is DEFERRED**: no incremental PostgreSQL migration exists
+  yet, so only from-empty baselines and Down/Up are verified. `DB-03` remains **PARTIALLY OPEN**.
+
+### `L-9` incident — IdentitySeeder in the live parity harness (P1-k)
+
+- **What happened.** The first SQL Server live run failed `L-9`: the seed produced only
+  `Tenants = 1` and `Permissions = 28` — no roles, users, modules or menus.
+- **`CreatedAt` initializer gap.** `AuditableEntity.CreatedAt` has no initializer. `AppRole` and
+  `AppUser` rely on `AuditableEntityInterceptor` to stamp it; the seeder's other entities either
+  default to `DateTime.UtcNow` or set it explicitly.
+- **Design-time vs runtime composition.** The runtime `MasterDbContext`
+  (`InfrastructureServiceExtensions`) attaches `AuditableEntityInterceptor` and
+  `DomainEventDispatcherInterceptor`; the design-time factories (`tools/ERP.DbMigrator`) attach
+  none. The harness used a design-time context, so `CreatedAt` stayed at its `Unspecified` default
+  and the P1-h UTC guard correctly refused to persist it.
+- **Exception swallowing.** `IdentitySeeder` catches every exception, logs it and returns
+  normally. With the harness's no-op logger the failure was silent — visible only as missing rows.
+- **Correction — harness only, no production change.** The `L-9` seeder context alone adds
+  `AuditableEntityInterceptor` with an anonymous system actor, and a capturing logger fails `L-9`
+  on any logged Error/Critical entry (redacted). Production already attaches the interceptor and
+  was not affected.
+- **Result.** SQL Server retry: 16/16 PASS. Cross-provider run: `L-9` PASS on both providers with
+  an identical non-secret structure fingerprint.
+- **Still open (not fixed):** the seeder's exception swallowing; seeding's dependency on the
+  interceptor; and `AuditableEntityInterceptor` overrides only `SavingChangesAsync`, so a
+  synchronous `SaveChanges()` would bypass stamping (0 synchronous call sites at the P1-h review).
+
+---
+
 ## Seeded Data
 
 ### Permissions (28 — system-defined, global catalogue)
@@ -719,8 +793,17 @@ owning Role / UserRole / membership, never from duplicating permission rows per 
 
 ### Default Admin User
 - UserName: `admin`
-- Password: `Admin@123` (from appsettings.Development.json)
+- Password: *(not documented — supplied via `SeedSettings:DefaultAdminPassword`; see "Credentials" below)*
 - Assigned: Admin role
+
+### Credentials
+
+Development credentials are deliberately **not reproduced** in this document. The seeded admin
+password comes from `SeedSettings:DefaultAdminPassword` (environment configuration or a secret
+store). Development secrets tracked in `appsettings.Development.json` are a recorded security
+finding (frontend `docs/roadmaps/production-readiness.md`); remediation — rotation and removal
+from tracking and history — requires a separately approved security slice.
+
 
 ---
 
@@ -831,7 +914,7 @@ JWT contains:
 
 **Request:**
 ```json
-{ "userName": "admin", "password": "Admin@123", "tenantCode": "ABC" }
+{ "userName": "admin", "password": "<admin password>", "tenantCode": "ABC" }
 ```
 
 **Tables queried (in order):**
