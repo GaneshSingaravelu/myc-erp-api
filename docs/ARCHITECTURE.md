@@ -1478,8 +1478,8 @@ A: Middleware catches exceptions from the entire pipeline (including other middl
 
 Multi-database provider support means the same application code runs against either database engine. **SQL Server and PostgreSQL are both first-class, chosen per customer deployment** — Master/Identity DB *and* Tenant DBs use the same provider (approved decision `ARCH-DB-03`). Mixing providers *within one deployment* is technically possible via `Tenant.DbProvider` but is **not a primary requirement** (`ARCH-DB-04`).
 
-> **PROVIDER SELECTION AND CREATION WORK; FULL PARITY IS PARTIALLY OPEN.** Status 2026-10-10
-> (Phase 1 slices P1-b – P1-k merged; P1-l documentation reconciliation in progress).
+> **PROVIDER SELECTION AND CREATION WORK; FULL PARITY IS PARTIALLY OPEN.** Status 2026-10-11
+> (Phase 1 slices P1-b – P1-l merged — P1-l via PR #27, `a49b77f`; Phase 1 not closed).
 >
 > **Closed — provider selection, creation and from-empty parity:**
 >
