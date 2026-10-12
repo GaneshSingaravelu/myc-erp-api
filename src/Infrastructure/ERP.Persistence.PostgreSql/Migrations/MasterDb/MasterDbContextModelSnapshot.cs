@@ -274,6 +274,35 @@ namespace ERP.Persistence.PostgreSql.Migrations.MasterDb
                     b.ToTable("UserRoles", (string)null);
                 });
 
+            modelBuilder.Entity("ERP.Identity.Entities.Company", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Code")
+                        .IsUnique();
+
+                    b.ToTable("Companies", (string)null);
+                });
+
             modelBuilder.Entity("ERP.Identity.Entities.FeatureFlag", b =>
                 {
                     b.Property<Guid>("Id")
@@ -518,6 +547,9 @@ namespace ERP.Persistence.PostgreSql.Migrations.MasterDb
                         .HasMaxLength(50)
                         .HasColumnType("character varying(50)");
 
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("ConnectionString")
                         .IsRequired()
                         .HasMaxLength(500)
@@ -543,6 +575,8 @@ namespace ERP.Persistence.PostgreSql.Migrations.MasterDb
 
                     b.HasIndex("Code")
                         .IsUnique();
+
+                    b.HasIndex("CompanyId");
 
                     b.ToTable("Tenants", (string)null);
                 });
@@ -795,6 +829,16 @@ namespace ERP.Persistence.PostgreSql.Migrations.MasterDb
                     b.Navigation("Permission");
                 });
 
+            modelBuilder.Entity("ERP.Identity.Entities.Tenant", b =>
+                {
+                    b.HasOne("ERP.Identity.Entities.Company", "Company")
+                        .WithMany("Tenants")
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("Company");
+                });
+
             modelBuilder.Entity("ERP.Identity.Entities.TenantFeatureFlag", b =>
                 {
                     b.HasOne("ERP.Identity.Entities.FeatureFlag", "FeatureFlag")
@@ -879,6 +923,11 @@ namespace ERP.Persistence.PostgreSql.Migrations.MasterDb
                     b.Navigation("UserRoles");
 
                     b.Navigation("UserTenants");
+                });
+
+            modelBuilder.Entity("ERP.Identity.Entities.Company", b =>
+                {
+                    b.Navigation("Tenants");
                 });
 
             modelBuilder.Entity("ERP.Identity.Entities.FeatureFlag", b =>

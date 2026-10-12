@@ -104,6 +104,31 @@ All tables inheriting `AuditableEntity` include these columns:
 
 ---
 
+### `Companies`
+
+**Purpose:** The organisational grouping above Tenant (approved model: Company 1:N Tenant).
+Master DB only — a Company has no business database of its own. Added by migration
+`AddCompanyFoundation` (P2-a, `ARCH-IMPL-01`).
+
+| Column | Type | Constraint | Purpose |
+|--------|------|------------|---------|
+| `Id` | `UNIQUEIDENTIFIER` | PK (`PK_Companies`), application-assigned | Company internal ID |
+| `Code` | `NVARCHAR(50)` | NOT NULL, UNIQUE (`IX_Companies_Code`) | Company code |
+| `Name` | `NVARCHAR(200)` | NOT NULL | Display name |
+| `IsActive` | `BIT` | NOT NULL (no database default) | Soft-disable flag — **stored only; nothing enforces it yet** |
+| `CreatedAt` | `DATETIME2` | NOT NULL | When the company was created (UTC) |
+
+**Notes:**
+- **No rows are created by the schema.** The migration adds the table empty; no default or
+  placeholder Company exists, and no application code writes Companies yet.
+- **`Code` contract:** the same canonical form as `Tenant.Code` — `Trim()` + `ToLowerInvariant()`,
+  enforced by the application. The unique index is plain (no filter, no collation), so on its own
+  it does **not** make codes case-insensitive. The application-level normalizer does not exist yet;
+  it arrives with the first approved slice that writes Companies.
+- Company membership does **not** grant Tenant access; Tenant access remains `UserTenants`.
+
+---
+
 ### `Tenants`
 
 **Purpose:** Registry of all tenant organizations. Each tenant gets its own business database.
@@ -117,6 +142,7 @@ All tables inheriting `AuditableEntity` include these columns:
 | `DbProvider` | `NVARCHAR(50)` | NOT NULL | "SqlServer" or "PostgreSql" |
 | `IsActive` | `BIT` | NOT NULL, DEFAULT 1 | Disabled tenants cannot log in |
 | `CreatedAt` | `DATETIME2` | NOT NULL | When tenant was provisioned |
+| `CompanyId` | `UNIQUEIDENTIFIER` | **NULL**, FK → Companies(Id) `ON DELETE RESTRICT` (`FK_Tenants_Companies_CompanyId`), indexed (`IX_Tenants_CompanyId`, non-unique) | Owning company. **NULL = no company association** — existing tenants keep NULL; nothing assigns them. Added by `AddCompanyFoundation` (P2-a, `ARCH-IMPL-02`) |
 
 **Notes:**
 - This is the first table queried on every request (cached 30 min by TenantMiddleware)
@@ -667,20 +693,40 @@ engines behave differently. PostgreSQL has its own migration lineages — one ba
 (P1-i `InitialMasterBaseline`, P1-j `InitialTenantBaseline`) — rather than a replay of SQL
 Server's history.
 
+**Master migration lineages (current):**
+
+| Provider | Lineage (ordered) |
+|---|---|
+| SQL Server | `20260407122318_InitialMaster` → `20260509162834_AddPasswordResetToken` → `20261012130942_AddCompanyFoundation` |
+| PostgreSQL | `20261007022731_InitialMasterBaseline` → `20261012131005_AddCompanyFoundation` |
+
+`AddCompanyFoundation` (P2-a) is the **first incremental PostgreSQL Master migration**. Both
+providers' versions contain the same operations — add nullable `Tenants.CompanyId`, create
+`Companies`, create `IX_Tenants_CompanyId` and unique `IX_Companies_Code`, add
+`FK_Tenants_Companies_CompanyId` (Restrict) — and no data operations; only store-type spellings
+differ. New Master migrations are generated into `Migrations/MasterDb/` for both providers. The
+SQL Server Master snapshot remains `Migrations/MasterDbContextModelSnapshot.cs` in the root
+`ERP.Persistence.SqlServer.Migrations` namespace, as it has been since `InitialMaster`; there is
+exactly one Master snapshot per provider assembly. The tenant (AppDb) lineages are unchanged.
+
 Verified offline by `ProviderParityTests` (59 tests) and live by `tools/ERP.ParityCheck` (P1-k:
 29 PASS, 4 EXPECTED DIFFERENCE, 0 FAIL, 0 SKIPPED, 1 DEFERRED; evidence run
-`phase2b2-20261010-160321`, retained outside the repository).
+`phase2b2-20261010-160321`, retained outside the repository). **The P1-k live run predates
+`AddCompanyFoundation`:** it verified the schema before Companies existed. The Company schema is
+so far verified **offline only** (`ProviderParityTests`, `CompanyMasterFoundationTests`, and
+`dotnet ef migrations has-pending-model-changes` on both providers); it has not been applied to a
+live database.
 
 ### Store-type mapping
 
 | SQL Server | PostgreSQL | Master columns | Tenant columns |
 |---|---|---|---|
-| `uniqueidentifier` | `uuid` | 42 | 32 |
-| `datetime2` | `timestamp with time zone` | 26 | 19 |
-| `bit` | `boolean` | 20 | 12 |
+| `uniqueidentifier` | `uuid` | 44 | 32 |
+| `datetime2` | `timestamp with time zone` | 27 | 19 |
+| `bit` | `boolean` | 21 | 12 |
 | `int` | `integer` | 3 | 5 |
 | `nvarchar(max)` | `text` | 3 | 3 |
-| `nvarchar(n)` | `character varying(n)` — same `n` | 46 | 24 |
+| `nvarchar(n)` | `character varying(n)` — same `n` | 48 | 24 |
 | `date` | `date` | 0 | 1 (`WorkOrders.DueDate`) |
 
 Table, column, key, index and foreign-key names are identical on both engines: quoted
@@ -705,6 +751,10 @@ PascalCase on PostgreSQL, no snake_case convention.
   either provider. The `DB-11` pre-deployment runbook in `TENANT_PROVISIONING.md` is the control.
 - **`L-10` — incremental-upgrade parity is DEFERRED**: no incremental PostgreSQL migration exists
   yet, so only from-empty baselines and Down/Up are verified. `DB-03` remains **PARTIALLY OPEN**.
+  *Update (P2-a):* the first incremental PostgreSQL **Master** migration now exists
+  (`AddCompanyFoundation`), but its live upgrade from the Phase 1 head with existing rows has
+  **not** been run, so Master `L-10` is still DEFERRED. The tenant (AppDb) side still has no
+  incremental PostgreSQL migration; AppDb `L-10` remains DEFERRED independently.
 
 ### `L-9` incident — IdentitySeeder in the live parity harness (P1-k)
 
@@ -832,6 +882,9 @@ from tracking and history — requires a separately approved security slice.
 ### Master DB Relationships
 
 ```
+Companies ◄── Tenants.CompanyId (nullable, Restrict)
+   (no membership table yet — Company never implies Tenant access)
+
 Tenants ◄────────────── UserTenants ──────────────► Users
    │                                                  │
    │         ┌── TenantFeatureFlags                   │

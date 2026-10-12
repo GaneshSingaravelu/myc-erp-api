@@ -38,24 +38,30 @@ public sealed record Expectations(ContextExpectations Master, ContextExpectation
 
     public static readonly Expectations Approved = new(
         Master: new ContextExpectations(
+            // P2-a (ARCH-IMPL-01/02): + Companies table, + nullable Tenants.CompanyId, + their
+            // indexes and FK, + one incremental Master migration per provider.
             Tables:
             [
-                "FeatureFlags", "IdentityAuditLogs", "MenuPermissions", "Menus", "Modules",
+                "Companies", "FeatureFlags", "IdentityAuditLogs", "MenuPermissions", "Menus", "Modules",
                 "Permissions", "RolePermissions", "Roles", "TenantFeatureFlags", "Tenants",
                 "UserPasswordHistory", "UserRoles", "UserSessions", "UserTenants", "Users",
             ],
-            Columns: 140,
+            Columns: 146,
             ColumnCategories: new Dictionary<string, int>
             {
-                [Guid] = 42, [DateTime] = 26, [Bool] = 20, [Int] = 3, [UnboundedText] = 3, [SizedText] = 46, [Date] = 0,
+                [Guid] = 44, [DateTime] = 27, [Bool] = 21, [Int] = 3, [UnboundedText] = 3, [SizedText] = 48, [Date] = 0,
             },
-            Indexes: 33,
-            UniqueIndexes: 14,
+            Indexes: 35,
+            UniqueIndexes: 15,
             FilteredIndexesSqlServer: 1,
             FilteredIndexesPostgreSql: 0,
-            ForeignKeys: 17,
-            SqlServerLineage: ["20260407122318_InitialMaster", "20260509162834_AddPasswordResetToken"],
-            PostgreSqlLineage: ["20261007022731_InitialMasterBaseline"]),
+            ForeignKeys: 18,
+            SqlServerLineage:
+            [
+                "20260407122318_InitialMaster", "20260509162834_AddPasswordResetToken",
+                "20261012130942_AddCompanyFoundation",
+            ],
+            PostgreSqlLineage: ["20261007022731_InitialMasterBaseline", "20261012131005_AddCompanyFoundation"]),
         AppDb: new ContextExpectations(
             Tables:
             [

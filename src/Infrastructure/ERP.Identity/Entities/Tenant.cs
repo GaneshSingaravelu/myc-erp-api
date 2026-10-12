@@ -34,7 +34,16 @@ public class Tenant : BaseEntity
     /// <summary>When this tenant was provisioned (UTC)</summary>
     public DateTime CreatedAt { get; set; }
 
+    /// <summary>
+    /// Owning company. NULL means the tenant has no company association yet — never
+    /// "every company". Company-scoped authorization must treat NULL as no access.
+    /// </summary>
+    public Guid? CompanyId { get; set; }
+
     // ── Navigation Properties ──
+
+    /// <summary>Company this tenant belongs to, if assigned</summary>
+    public Company? Company { get; set; }
 
     /// <summary>Users who have access to this tenant</summary>
     public ICollection<UserTenant> UserTenants { get; set; } = [];
