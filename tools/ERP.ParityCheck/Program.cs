@@ -23,6 +23,12 @@ const string Usage = """
       ERP_PARITY_SQLSERVER_CONTAINER   optional: container name for read-only `docker inspect` evidence
       ERP_PARITY_POSTGRESQL_CONTAINER  optional: container name for read-only `docker inspect` evidence
 
+    Approved endpoint identity (REQUIRED for --live; non-secret; must match the endpoint exactly):
+      ERP_PARITY_SQLSERVER_EXPECTED_DATASOURCE  loopback data source, e.g. localhost,14333 or localhost\SQLDEV
+      ERP_PARITY_POSTGRESQL_EXPECTED_HOSTPORT   loopback host:port, e.g. localhost:5433
+      A match proves only that the configuration points at that loopback endpoint — not that
+      the server is disposable. Remote hosts, LocalDB, pipes, sockets and multi-host are refused.
+
     Disposable databases (the ONLY names ever created or dropped):
       SQL Server:  ERP_P1k_Parity_SqlServer_Throwaway
       PostgreSQL:  ERP_P1k_Parity_PostgreSql_Throwaway
@@ -113,6 +119,7 @@ else
     [
         Endpoint.SqlServerVariable, Endpoint.PostgreSqlVariable,
         Endpoint.SqlServerContainerVariable, Endpoint.PostgreSqlContainerVariable,
+        Endpoint.SqlServerExpectedVariable, Endpoint.PostgreSqlExpectedVariable,
     ];
     var environment = variables.ToDictionary(v => v, Environment.GetEnvironmentVariable);
 

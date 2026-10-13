@@ -45,6 +45,43 @@ public sealed record SeedMeasurement(
 
 public sealed record DownUpMeasurement(int TablesAfterDown, int HistoryRowsAfterDown, int TablesAfterUp, string[] HistoryAfterUp);
 
+/// <summary>
+/// L-10 (Master) — the Company objects as the catalog reports them at one stage.
+/// <see cref="ForeignKeyDeleteAction"/> is the catalog spelling (SQL Server
+/// <c>delete_referential_action_desc</c>; PostgreSQL <c>confdeltype</c> mapped to a word), or null.
+/// </summary>
+public sealed record CompanyShape(
+    bool CompaniesTable, string[] CompanyColumns, string[] NullableCompanyColumns,
+    bool TenantCompanyIdColumn, bool TenantCompanyIdNullable,
+    bool? CodeIndexUnique, bool TenantCompanyIdIndex, string? ForeignKeyDeleteAction)
+{
+    public static readonly CompanyShape Absent = new(false, [], [], false, false, null, false, null);
+}
+
+/// <summary>
+/// One L-10 stage. <see cref="Fingerprints"/> maps each fixture table to a SHA-256 of its
+/// ORIGINAL (pre-upgrade) columns, canonicalized provider-neutrally. <see cref="CompaniesRows"/>
+/// and <see cref="TenantsWithCompany"/> are -1 when the objects they count do not exist.
+/// </summary>
+public sealed record UpgradeStage(
+    string Name, string[] History, SchemaMeasurement Schema, CompanyShape Shape,
+    IReadOnlyDictionary<string, string> Fingerprints, long CompaniesRows, long TenantsWithCompany);
+
+/// <summary>
+/// A constraint probe run inside a transaction that was rolled back. <see cref="RolledBack"/> is
+/// true only when the rollback was observed afterwards from a separate connection.
+/// </summary>
+public sealed record ProbeResult(string Name, bool Rejected, bool RolledBack, string Detail);
+
+/// <summary>
+/// Everything one live Master L-10 cycle observed. <see cref="BeforeRowCounts"/> holds the
+/// rows actually persisted per fixture table at the Phase 1 head, counted from the database —
+/// not the number of INSERT statements executed (<see cref="FixtureRows"/>).
+/// </summary>
+public sealed record UpgradeMeasurement(
+    UpgradeStage Before, UpgradeStage AfterUp, UpgradeStage AfterDown, UpgradeStage AfterReUp,
+    IReadOnlyList<ProbeResult> Probes, int FixtureRows, IReadOnlyDictionary<string, long> BeforeRowCounts);
+
 /// <summary>The live check matrix: identity, title and which context each check runs in.</summary>
 public static class Checks
 {
@@ -63,6 +100,9 @@ public static class Checks
         (L7, "foreign keys: enforcement, Cascade, Restrict", [DbContextKind.Master, DbContextKind.AppDb]),
         (L8, "Code case-sensitivity (Tenant.Code / Plant.Code)", [DbContextKind.Master, DbContextKind.AppDb]),
         (L11, "migration Down/Up", [DbContextKind.Master, DbContextKind.AppDb]),
+        // Master only: AppDb has no incremental PostgreSQL migration, so its L-10 is reported
+        // once, as DEFERRED (Evaluator.DeferredAppDb), never per provider.
+        (L10, "incremental upgrade path", [DbContextKind.Master]),
     ];
 
     public static string Title(string id) =>
@@ -304,8 +344,143 @@ public static class Evaluator
                 $"after Down: tables={m.TablesAfterDown}, history={m.HistoryRowsAfterDown}; after Up: tables={m.TablesAfterUp}, history=[{string.Join(",", m.HistoryAfterUp)}]");
     }
 
-    public static CheckResult Deferred() => new(Checks.L10, Checks.Title(Checks.L10), "All", Classification.Deferred,
-        "no incremental PostgreSQL migration exists yet; an upgrade path cannot be exercised without fabricating one");
+    /// <summary>AppDb L-10: no incremental AppDb PostgreSQL migration exists, so there is nothing to upgrade.</summary>
+    public static CheckResult DeferredAppDb() => new(Checks.L10, Checks.Title(Checks.L10), "All/AppDb", Classification.Deferred,
+        "no incremental AppDb PostgreSQL migration exists yet; the AppDb upgrade path cannot be exercised without fabricating one");
+
+    /// <summary>
+    /// L-10 (Master) — incremental upgrade from the Phase 1 head through the pinned upgrade
+    /// migration, with pre-existing rows. PASS only when EVERY assertion below holds; the first
+    /// problems found are named, with the stage and table they concern.
+    ///
+    /// Histories are checked as exact prefixes of the approved lineage ending at the pinned
+    /// From / To migrations, so this check judges the upgrade transition itself; full-lineage
+    /// equality remains L-2's job.
+    /// </summary>
+    public static CheckResult Upgrade(Provider p, DbContextKind k, UpgradeMeasurement m, ContextExpectations e)
+    {
+        if (e.Upgrade is not { } u)
+            return R(Checks.L10, p, k, Classification.FailDefect, "no upgrade expectation pinned for this context");
+
+        var lineage = e.Lineage(p);
+        var from = u.From(p);
+        var to = u.To(p);
+        var fromIndex = Array.IndexOf(lineage, from);
+        var toIndex = Array.IndexOf(lineage, to);
+        if (fromIndex < 0 || toIndex != fromIndex + 1)
+            return R(Checks.L10, p, k, Classification.FailDefect,
+                $"expectations inconsistent: '{from}' must be immediately followed by '{to}' in the approved lineage [{string.Join(", ", lineage)}]");
+
+        var beforeHistory = lineage[..(fromIndex + 1)];
+        var upHistory = lineage[..(toIndex + 1)];
+        var problems = new List<string>();
+
+        void History(UpgradeStage s, string[] expected)
+        {
+            if (!s.History.SequenceEqual(expected))
+                problems.Add($"{s.Name}: history [{string.Join(", ", s.History)}] != [{string.Join(", ", expected)}]");
+        }
+
+        void Absent(UpgradeStage s)
+        {
+            if (s.Shape.CompaniesTable) problems.Add($"{s.Name}: Companies table present");
+            if (s.Shape.TenantCompanyIdColumn) problems.Add($"{s.Name}: Tenants.CompanyId present");
+        }
+
+        void Upgraded(UpgradeStage s)
+        {
+            var schema = Schema(p, k, s.Schema, e);
+            if (schema.Classification != Classification.Pass) problems.Add($"{s.Name}: schema {schema.Detail}");
+
+            var sh = s.Shape;
+            if (!sh.CompaniesTable) problems.Add($"{s.Name}: Companies table missing");
+            if (!sh.CompanyColumns.Order(StringComparer.Ordinal).SequenceEqual(u.CompanyColumns.Order(StringComparer.Ordinal)))
+                problems.Add($"{s.Name}: Companies columns [{string.Join(",", sh.CompanyColumns)}] != [{string.Join(",", u.CompanyColumns)}]");
+            if (sh.NullableCompanyColumns.Length > 0) problems.Add($"{s.Name}: nullable Companies columns [{string.Join(",", sh.NullableCompanyColumns)}]");
+            if (!sh.TenantCompanyIdColumn) problems.Add($"{s.Name}: Tenants.CompanyId missing");
+            else if (!sh.TenantCompanyIdNullable) problems.Add($"{s.Name}: Tenants.CompanyId is NOT NULL");
+            if (sh.CodeIndexUnique != true) problems.Add($"{s.Name}: {u.CodeIndex} unique={sh.CodeIndexUnique?.ToString() ?? "missing"}");
+            if (!sh.TenantCompanyIdIndex) problems.Add($"{s.Name}: {u.TenantCompanyIdIndex} missing");
+            if (sh.ForeignKeyDeleteAction != u.DeleteAction(p))
+                problems.Add($"{s.Name}: {u.ForeignKey} delete action '{sh.ForeignKeyDeleteAction ?? "missing"}' != '{u.DeleteAction(p)}'");
+            if (s.CompaniesRows != 0) problems.Add($"{s.Name}: Companies has {s.CompaniesRows} row(s), expected 0");
+            if (s.TenantsWithCompany != 0) problems.Add($"{s.Name}: {s.TenantsWithCompany} tenant(s) with non-NULL CompanyId, expected 0");
+        }
+
+        void SameData(UpgradeStage s)
+        {
+            var tables = m.Before.Fingerprints.Keys.Union(s.Fingerprints.Keys).Order(StringComparer.Ordinal);
+            foreach (var table in tables)
+            {
+                var before = m.Before.Fingerprints.GetValueOrDefault(table);
+                var now = s.Fingerprints.GetValueOrDefault(table);
+                if (before is null || now is null || before != now)
+                    problems.Add($"{s.Name}: {table} fingerprint {Short(now)} != before {Short(before)}");
+            }
+        }
+
+        if (m.FixtureRows != u.FixtureRows) problems.Add($"fixture rows {m.FixtureRows} != {u.FixtureRows}");
+        foreach (var (table, expectedRows) in UpgradeFixtureCounts.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+        {
+            if (!m.BeforeRowCounts.TryGetValue(table, out var actualRows))
+                problems.Add($"before: {table} persisted row count not measured, expected {expectedRows}");
+            else if (actualRows != expectedRows)
+                problems.Add($"before: {table} has {actualRows} persisted row(s), expected {expectedRows}");
+        }
+        if (m.Before.Fingerprints.Count != u.FixtureTables.Length
+            || !m.Before.Fingerprints.Keys.Order(StringComparer.Ordinal).SequenceEqual(u.FixtureTables.Order(StringComparer.Ordinal)))
+            problems.Add($"before: fingerprinted tables [{string.Join(",", m.Before.Fingerprints.Keys)}] != [{string.Join(",", u.FixtureTables)}]");
+
+        History(m.Before, beforeHistory);
+        Absent(m.Before);
+
+        History(m.AfterUp, upHistory);
+        Upgraded(m.AfterUp);
+        SameData(m.AfterUp);
+
+        foreach (var name in u.Probes)
+        {
+            var probe = m.Probes.FirstOrDefault(x => x.Name == name);
+            if (probe is null) problems.Add($"probe {name}: not run");
+            else if (!probe.Rejected) problems.Add($"probe {name}: not rejected ({probe.Detail})");
+            else if (!probe.RolledBack) problems.Add($"probe {name}: rollback not confirmed ({probe.Detail})");
+        }
+
+        History(m.AfterDown, beforeHistory);
+        Absent(m.AfterDown);
+        if (!SameSchema(m.AfterDown.Schema, m.Before.Schema))
+            problems.Add($"{m.AfterDown.Name}: schema differs from before-upgrade schema");
+        SameData(m.AfterDown);
+
+        History(m.AfterReUp, upHistory);
+        Upgraded(m.AfterReUp);
+        SameData(m.AfterReUp);
+
+        return problems.Count == 0
+            ? R(Checks.L10, p, k, Classification.Pass,
+                $"{from} -> {to} -> {from} -> {to} with {m.FixtureRows} pre-existing rows: data unchanged at every stage; " +
+                $"Companies created empty, Tenants.CompanyId NULL, {u.ForeignKey} {u.DeleteAction(p)}; {m.Probes.Count} probes rejected and rolled back")
+            : R(Checks.L10, p, k, Classification.FailDefect,
+                string.Join("; ", problems.Take(8)) + (problems.Count > 8 ? $" (+{problems.Count - 8} more)" : string.Empty));
+    }
+
+    /// <summary>
+    /// F2 — the exact rows the L-10 fixtures must have PERSISTED at the Phase 1 head, per table
+    /// (sums to <see cref="UpgradeExpectation.FixtureRows"/>). Checked against database counts.
+    /// </summary>
+    public static readonly IReadOnlyDictionary<string, long> UpgradeFixtureCounts = new Dictionary<string, long>
+    {
+        ["Tenants"] = 2, ["Users"] = 2, ["UserTenants"] = 3, ["Roles"] = 2, ["UserRoles"] = 2,
+    };
+
+    private static bool SameSchema(SchemaMeasurement a, SchemaMeasurement b) =>
+        a.Tables.Order(StringComparer.Ordinal).SequenceEqual(b.Tables.Order(StringComparer.Ordinal))
+        && a.Columns == b.Columns
+        && a.ColumnCategories.OrderBy(kv => kv.Key, StringComparer.Ordinal).SequenceEqual(b.ColumnCategories.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+        && a.Indexes == b.Indexes && a.UniqueIndexes == b.UniqueIndexes
+        && a.FilteredIndexes == b.FilteredIndexes && a.ForeignKeys == b.ForeignKeys;
+
+    private static string Short(string? fingerprint) => fingerprint is null ? "missing" : fingerprint[..Math.Min(12, fingerprint.Length)];
 
     public static CheckResult Skipped(string id, Provider p, DbContextKind k, string reason) =>
         R(id, p, k, Classification.SkippedNoEndpoint, reason);
