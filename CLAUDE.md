@@ -22,7 +22,9 @@ deployment are not a primary requirement. Oracle is **not** in the approved scop
 > tenant identity does not depend on the engine's collation (`DB-10` — closed, PR #20).
 > PostgreSQL has its own migration baselines for Master and tenant DBs (`DB-02` — closed,
 > PRs #24–#25). Provider parity is verified by `ProviderParityTests` and `tools/ERP.ParityCheck`
-> (PR #26) but `DB-03` stays **PARTIALLY OPEN**: incremental-upgrade parity (`L-10`) is deferred.
+> (PR #26) but `DB-03` stays **PARTIALLY OPEN**: incremental-upgrade parity (`L-10`) is verified
+> for PostgreSQL Master only (P2-a.2.3e, 2026-10-17, unmerged P2-a branch); SQL Server Master and
+> AppDb `L-10` remain open (see `docs/DATABASE_ARCHITECTURE.md` → *Unresolved debt*).
 > ⚠️ **Still open:** `DB-09` `Plant.Code` provider divergence (documented, unresolved);
 > `tools/ERP.DbMigrator` remains a stub (`DB-08`); and a **read-only `Tenant.Code`
 > canonicality check must be run before deploying to any unverified Master database**
