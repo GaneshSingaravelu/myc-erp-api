@@ -409,6 +409,16 @@ curl -X POST https://localhost:5001/api/v1/auth/login \
 
 When you add new tables or columns in a future phase:
 
+> **Tooling and provider note (2026-10-30).** A schema change needs a migration in **each**
+> provider's lineage (`ERP.Persistence.SqlServer` and `ERP.Persistence.PostgreSql`). `AppDbContext`
+> migrations must use `tools/ERP.DbMigrator` as the startup project, because `ERP.Api` fails at
+> design time; the command is in `CLAUDE.md` *Important Notes*. The
+> `--startup-project src/Host/ERP.Api` examples below predate that guidance and are **not** a
+> verified form. For PostgreSQL, the verified apply shape is under *Step 2: Apply EF Core
+> Migrations* above. A verified SQL Server per-tenant apply command is **not** recorded here and
+> remains pending. `tools/ERP.DbMigrator` being the design-time startup project does not make its
+> stub `Program.cs` a working migration tool (`DB-08`).
+
 ### 1. Create the Migration
 
 ```bash
