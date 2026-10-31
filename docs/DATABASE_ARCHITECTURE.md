@@ -734,10 +734,10 @@ PascalCase on PostgreSQL, no snake_case convention.
 
 Recorded at the Phase 1 conditional closure (2026-10-11). **Not fixed; no issue ID assigned.**
 
-- **Where:** `src/Infrastructure/ERP.Persistence/Context/AppDbContext.cs`.
+- **Where:** `src/Infrastructure/ERP.Persistence/Context/AppDbContext.cs` and `MasterDbContext.cs`.
   `AppDbContext.ConfigurationAssemblies` is a shared **static mutable** `List<Assembly>`
-  (line 71), and `OnModelCreating` **enumerates** it (line 100). Module service extensions and
-  design-time option builders add to it.
+  (line 71), and `OnModelCreating` **enumerates** it (line 100). `MasterDbContext` has the same
+  pattern (lines 34 and 68). Module service extensions and design-time option builders add to them.
 - **Failure mode:** if the list is mutated while another thread is enumerating it, enumeration
   throws `InvalidOperationException` (*Collection was modified*).
 - **Observed:** the Claude execution session saw this exception in unit-test runs during
