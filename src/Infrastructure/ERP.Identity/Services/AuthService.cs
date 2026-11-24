@@ -85,6 +85,11 @@ public class AuthService : IAuthService
 
     public async Task<Result<LoginResponse>> LoginAsync(LoginRequest request, string tenantId)
     {
+        // Step 0: Fail closed on a missing tenant identifier. The controller already rejects
+        // it, but the service is the authoritative gate and must not rely on its callers.
+        if (string.IsNullOrWhiteSpace(tenantId))
+            return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidTenant", "Tenant not found."));
+
         // Step 1: Find user by normalized username (eager-load roles + permissions for token claims)
         var normalizedUserName = request.UserName.ToUpperInvariant();
         var user = await _users.GetByNormalizedUserNameWithRolesAndPermissionsAsync(normalizedUserName);
@@ -174,6 +179,17 @@ public class AuthService : IAuthService
             return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidCredentials", "Invalid username or password."));
         }
 
+        // Step 4c: SECURITY — An inactive tenant must not issue sessions. /api/v1/auth/login is
+        // in TenantMiddleware's skip list, so the middleware's IsActive gate never runs for
+        // login — this check is the ONLY place it is enforced, and it reads the database
+        // directly (not the 30-minute middleware cache). It runs AFTER the membership gate so
+        // a non-member gets the generic InvalidCredentials and cannot learn the tenant's status.
+        if (!resolvedTenant.IsActive)
+        {
+            _logger.LogWarning("Login denied: tenant '{TenantCode}' is inactive", resolvedTenant.Code);
+            return Result.Failure<LoginResponse>(Error.Validation("Auth.TenantInactive", "Tenant account is inactive. Contact administrator."));
+        }
+
         // Step 5: Build roles and permissions scoped to the resolved tenant.
         // SECURITY: AppUserRole carries a TenantId — a user can be Admin in Tenant A
         // and Viewer in Tenant B. Filtering here prevents JWT claims from leaking
@@ -249,6 +265,9 @@ public class AuthService : IAuthService
 
     public async Task<Result<LoginResponse>> RefreshTokenAsync(RefreshTokenRequest request, string tenantId)
     {
+        if (string.IsNullOrWhiteSpace(tenantId))
+            return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidTenant", "Tenant not found."));
+
         // Extract user from expired token
         var principal = _tokenService.GetPrincipalFromExpiredToken(request.AccessToken);
         if (principal is null)
@@ -339,6 +358,26 @@ public class AuthService : IAuthService
             }
         }
 
+        // SECURITY: The session's tenant must still exist and be active. Read from the
+        // database on every refresh so a deactivation takes effect at the next refresh,
+        // independent of TenantMiddleware's cached TenantInfo. When a refresh request reaches
+        // this check while the session's tenant is missing or inactive, THAT session is revoked,
+        // so re-activating the tenant later does not revive it. Deactivation itself does not
+        // revoke sessions: a session that is not refreshed while the tenant is inactive stays
+        // un-revoked and can be refreshed again if the tenant is re-activated.
+        var sessionTenant = await _tenants.GetByIdAsync(session.TenantId);
+        if (sessionTenant is null || !sessionTenant.IsActive)
+        {
+            session.IsRevoked = true;
+            session.RevokedAt = now;
+            session.RevokedReason = "TenantInactive";
+            await _unitOfWork.SaveChangesAsync();
+            InvalidateJtiCache(session.AccessTokenJti);
+
+            _logger.LogWarning("Refresh rejected for user {UserId}: tenant {TenantId} is missing or inactive", userId, session.TenantId);
+            return Result.Failure<LoginResponse>(Error.Validation("Auth.TenantInactive", "Tenant account is inactive. Contact administrator."));
+        }
+
         // Load user with roles and permissions
         var user = await _users.GetByIdWithRolesAndPermissionsAsync(userId);
 
@@ -366,14 +405,29 @@ public class AuthService : IAuthService
             return Result.Failure<LoginResponse>(Error.Validation("Auth.SecurityStampChanged", "Security credentials have changed. Please log in again."));
         }
 
+        // SECURITY: Same membership gate as LoginAsync. Without it, removing a user from a
+        // tenant (UserTenants.IsActive = false) would not stop them refreshing an existing
+        // session for that tenant until its absolute expiry. Generic error, as at login.
+        if (!await _users.IsAssignedToTenantAsync(user.Id, session.TenantId))
+        {
+            session.IsRevoked = true;
+            session.RevokedAt = now;
+            session.RevokedReason = "TenantMembershipRevoked";
+            await _unitOfWork.SaveChangesAsync();
+            InvalidateJtiCache(session.AccessTokenJti);
+
+            _logger.LogWarning("Refresh rejected for user {UserId}: no active membership in tenant {TenantId}", userId, session.TenantId);
+            return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidRefreshToken", "Invalid or expired refresh token."));
+        }
+
         // Generate new tokens (token rotation) — derive tenant from session, NOT from caller header.
         // SECURITY: Scope roles/permissions to the session's tenant, same as LoginAsync, so a user
         // with roles in multiple tenants never receives cross-tenant claims via token refresh.
-        var sessionTenant = await _tenants.GetByIdAsync(session.TenantId);
         var tenantScopedRoles = user.UserRoles.Where(ur => ur.TenantId == session.TenantId).ToList();
         var roles = tenantScopedRoles.Select(ur => ur.Role.Name).ToList();
         var permissions = tenantScopedRoles.SelectMany(ur => ur.Role.RolePermissions).Select(rp => rp.Permission.Code).Distinct().ToList();
-        var tenantCode = sessionTenant?.Code ?? tenantId;
+        // Tenant code comes only from the verified session tenant — never from the caller header.
+        var tenantCode = sessionTenant.Code;
 
         var newJti = Guid.NewGuid().ToString();
         var newAccessToken = _tokenService.GenerateAccessToken(user, roles, permissions, tenantCode, newJti);
