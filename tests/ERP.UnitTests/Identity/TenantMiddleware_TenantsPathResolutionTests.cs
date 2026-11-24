@@ -611,6 +611,16 @@ public class TenantMiddleware_TenantsPathResolutionTests
             return context;
         }
 
+        public async Task<HttpContext> SendAuthenticatedAsync(string path, string tenantHeader, params Claim[] claims)
+        {
+            Reached = false;
+            using var scope = _root.CreateScope();
+            var context = AuthenticatedContextFor(path, tenantHeader, claims);
+            context.RequestServices = scope.ServiceProvider;
+            await _app(context);
+            return context;
+        }
+
         public void Dispose() => _root.Dispose();
     }
 
@@ -700,6 +710,223 @@ public class TenantMiddleware_TenantsPathResolutionTests
         await pipeline.WithDbAsync(db => db.Set<TenantEntity>().AddAsync(NewTenantEntity(KnownTenantCode)).AsTask());
 
         var context = await pipeline.SendAsync(WorkOrdersPath, KnownTenantCode, OtherTenantCode);
+
+        Assert.False(pipeline.Reached);
+        Assert.Equal(StatusCodes.Status403Forbidden, context.Response.StatusCode);
+        Assert.Equal("TENANT_MISMATCH", CodeOf(context));
+    }
+
+    // ══ R2-DEV-02B-1 — Mandatory tenant_id claim ═════════════════════════════════
+    //
+    // UNIT level, same seam as above. An authenticated request must carry a non-blank
+    // tenant_id claim that matches X-Tenant-Id; otherwise it gets the existing
+    // 403 TENANT_MISMATCH, decided before the cache or the store is touched.
+
+    /// <summary>
+    /// An AUTHENTICATED context with exactly the claims given — unlike <see cref="ContextFor"/>,
+    /// which only builds a principal when it has a tenant claim to add.
+    /// </summary>
+    private static DefaultHttpContext AuthenticatedContextFor(string path, string? tenantHeader, params Claim[] claims)
+    {
+        var context = new DefaultHttpContext();
+        context.Request.Path = path;
+        context.Response.Body = new MemoryStream();
+        if (tenantHeader is not null)
+            context.Request.Headers[Header] = tenantHeader;
+        context.User = new ClaimsPrincipal(new ClaimsIdentity(
+            claims.Length == 0 ? [new Claim("sub", "user-1")] : claims,
+            authenticationType: "Test"));
+        return context;
+    }
+
+    private async Task<HttpContext> SendAuthenticatedAsync(string path, string? header, params Claim[] claims)
+    {
+        _nextCalled = false;
+        var context = AuthenticatedContextFor(path, header, claims);
+        await Sut().InvokeAsync(context, _store.Object, _cache);
+        return context;
+    }
+
+    private void AssertRejectedAsMismatch(HttpContext context)
+    {
+        Assert.False(_nextCalled);
+        Assert.Equal(StatusCodes.Status403Forbidden, context.Response.StatusCode);
+        Assert.Equal("TENANT_MISMATCH", CodeOf(context));
+        Assert.Null(context.Items["CurrentTenant"]);
+        _store.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task B01_MissingTenantClaim_AuthenticatedRequest_Returns403Mismatch()
+    {
+        var context = await SendAuthenticatedAsync(WorkOrdersPath, KnownTenantCode, new Claim("sub", "user-1"));
+
+        Assert.True(context.User.Identity!.IsAuthenticated);
+        AssertRejectedAsMismatch(context);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("   ")]
+    [InlineData("\t")]
+    public async Task B02_EmptyOrWhitespaceTenantClaim_Returns403Mismatch(string claimValue)
+    {
+        var context = await SendAuthenticatedAsync(WorkOrdersPath, KnownTenantCode,
+            new Claim("sub", "user-1"), new Claim("tenant_id", claimValue));
+
+        AssertRejectedAsMismatch(context);
+    }
+
+    [Fact]
+    public async Task B03_MismatchedTenantClaim_Returns403Mismatch()
+    {
+        var context = await SendAuthenticatedAsync(WorkOrdersPath, KnownTenantCode,
+            new Claim("sub", "user-1"), new Claim("tenant_id", OtherTenantCode));
+
+        AssertRejectedAsMismatch(context);
+    }
+
+    [Fact]
+    public async Task B04_MatchingClaim_ActiveTenant_IsAllowed()
+    {
+        _store.Setup(s => s.GetByIdentifierAsync(KnownTenantCode)).ReturnsAsync(Tenant());
+
+        var context = await SendAuthenticatedAsync(WorkOrdersPath, KnownTenantCode,
+            new Claim("sub", "user-1"), new Claim("tenant_id", KnownTenantCode));
+
+        Assert.True(_nextCalled);
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+        Assert.Equal(KnownTenantCode, Assert.IsType<TenantInfo>(context.Items["CurrentTenant"]).Identifier);
+        _store.Verify(s => s.GetByIdentifierAsync(KnownTenantCode), Times.Once);
+    }
+
+    public static TheoryData<string?> InvalidClaimValues() => [null, "", "   ", OtherTenantCode];
+
+    [Theory]
+    [MemberData(nameof(InvalidClaimValues))]
+    public async Task B05_InvalidClaim_NoMasterDbLookup_AndNoTenantCacheAccess(string? claimValue)
+    {
+        // Strict mocks for BOTH the store and the cache: any lookup, read or write fails the test.
+        var strictCache = new Mock<IMemoryCache>(MockBehavior.Strict);
+        var claims = claimValue is null
+            ? new[] { new Claim("sub", "user-1") }
+            : new[] { new Claim("sub", "user-1"), new Claim("tenant_id", claimValue) };
+        var context = AuthenticatedContextFor(WorkOrdersPath, KnownTenantCode, claims);
+
+        await Sut().InvokeAsync(context, _store.Object, strictCache.Object);
+
+        Assert.False(_nextCalled);
+        Assert.Equal(StatusCodes.Status403Forbidden, context.Response.StatusCode);
+        Assert.Equal("TENANT_MISMATCH", CodeOf(context));
+        _store.VerifyNoOtherCalls();
+        strictCache.VerifyNoOtherCalls();
+    }
+
+    [Theory]
+    [InlineData("DEV-TENANT", "dev-tenant")]
+    [InlineData("dev-tenant", "DEV-TENANT")]
+    [InlineData("Dev-Tenant", "dEV-tENANT")]
+    public async Task B06_CaseInsensitiveMatch_StillAllowed(string header, string claim)
+    {
+        _store.Setup(s => s.GetByIdentifierAsync(header)).ReturnsAsync(Tenant());
+
+        var context = await SendAuthenticatedAsync(WorkOrdersPath, header,
+            new Claim("sub", "user-1"), new Claim("tenant_id", claim));
+
+        Assert.True(_nextCalled);
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+    }
+
+    [Fact]
+    public async Task B07_AnonymousRequest_NoPrincipal_KeepsCachedBehaviour()
+    {
+        _store.Setup(s => s.GetByIdentifierAsync(KnownTenantCode)).ReturnsAsync(Tenant());
+
+        var first = await SendAsync("/api/v1/auth/refresh", KnownTenantCode, tokenTenant: null);
+        Assert.True(_nextCalled);
+        var second = await SendAsync("/api/v1/auth/refresh", KnownTenantCode, tokenTenant: null);
+        Assert.True(_nextCalled);
+
+        Assert.NotNull(first.Items["CurrentTenant"]);
+        Assert.NotNull(second.Items["CurrentTenant"]);
+        _store.Verify(s => s.GetByIdentifierAsync(KnownTenantCode), Times.Once); // second served from cache
+    }
+
+    [Fact]
+    public async Task B07_UnauthenticatedIdentityWithoutClaim_IsTreatedAsAnonymous_NotRejected()
+    {
+        // A principal whose identity is NOT authenticated (no authentication type) is an
+        // anonymous caller: the claim requirement applies only to authenticated requests.
+        _store.Setup(s => s.GetByIdentifierAsync(KnownTenantCode)).ReturnsAsync(Tenant());
+        _nextCalled = false;
+        var context = ContextFor("/api/v1/auth/refresh", KnownTenantCode);
+        context.User = new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", "user-1")]));
+
+        await Sut().InvokeAsync(context, _store.Object, _cache);
+
+        Assert.False(context.User.Identity!.IsAuthenticated);
+        Assert.True(_nextCalled);
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+    }
+
+    [Fact]
+    public async Task B07_AnonymousRequest_MissingHeader_StillReturns400()
+    {
+        var context = await SendAsync(WorkOrdersPath, header: null, tokenTenant: null);
+
+        Assert.False(_nextCalled);
+        Assert.Equal(StatusCodes.Status400BadRequest, context.Response.StatusCode);
+        Assert.Equal("TENANT_HEADER_MISSING", CodeOf(context));
+    }
+
+    [Theory]
+    [MemberData(nameof(StillSkippedPaths))]
+    public async Task B08_SkippedPaths_IncludingLoginAndSignalR_StillSkip_EvenWithoutClaim(string path)
+    {
+        // /api/v1/auth/login (PR #33) and /hubs/ (SignalR) keep skipping the middleware, so the
+        // new claim requirement does not reach them.
+        var context = await SendAuthenticatedAsync(path, KnownTenantCode, new Claim("sub", "user-1"));
+
+        Assert.True(_nextCalled);
+        Assert.Null(context.Items["CurrentTenant"]);
+        _store.VerifyNoOtherCalls();
+    }
+
+    [Theory]
+    [MemberData(nameof(TenantsPaths))]
+    public async Task B08_TenantsPaths_MissingClaim_Rejected(string path)
+    {
+        // PR #14 routes the Tenants paths through the middleware; they get the same rule.
+        var context = await SendAuthenticatedAsync(path, KnownTenantCode, new Claim("sub", "user-1"));
+
+        AssertRejectedAsMismatch(context);
+    }
+
+    [Fact]
+    public async Task B08_FreshStatusEnforcement_StillAppliesWithValidClaim()
+    {
+        // PR #34: a valid, matching claim still gets the fresh status read.
+        _store.SetupSequence(s => s.GetByIdentifierAsync(KnownTenantCode))
+            .ReturnsAsync(Tenant(isActive: true))
+            .ReturnsAsync(Tenant(isActive: false));
+        var claims = new[] { new Claim("sub", "user-1"), new Claim("tenant_id", KnownTenantCode) };
+
+        await SendAuthenticatedAsync(WorkOrdersPath, KnownTenantCode, claims);
+        Assert.True(_nextCalled);
+
+        var denied = await SendAuthenticatedAsync(WorkOrdersPath, KnownTenantCode, claims);
+        Assert.False(_nextCalled);
+        Assert.Equal("TENANT_INACTIVE", CodeOf(denied));
+    }
+
+    [Fact]
+    public async Task Pipeline_B01_MissingClaim_RejectedThroughRealPipeline()
+    {
+        using var pipeline = new Pipeline();
+        await pipeline.WithDbAsync(db => db.Set<TenantEntity>().AddAsync(NewTenantEntity(KnownTenantCode)).AsTask());
+
+        var context = await pipeline.SendAuthenticatedAsync(WorkOrdersPath, KnownTenantCode, new Claim("sub", "user-1"));
 
         Assert.False(pipeline.Reached);
         Assert.Equal(StatusCodes.Status403Forbidden, context.Response.StatusCode);
