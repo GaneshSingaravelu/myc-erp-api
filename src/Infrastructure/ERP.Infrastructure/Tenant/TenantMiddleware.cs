@@ -35,6 +35,13 @@ namespace ERP.Infrastructure.Tenant;
 /// Without caching: Every request hits the master database = slow
 /// With caching: Only the first request per tenant hits the DB, then it's instant
 ///
+/// EXCEPTION — AUTHENTICATED REQUESTS (R2-DEV-02A):
+/// A tenant's IsActive is a security decision, and a cached "active" can be up to 30 minutes
+/// stale. So for an authenticated request the tenant is ALWAYS re-read from the master
+/// database (one indexed lookup by Code), the cache entry is overwritten with what was read,
+/// and a failed lookup refuses the request (503) instead of falling back to the cache.
+/// Unauthenticated requests on non-skipped paths keep using the cache.
+///
 /// REGISTRATION IN Program.cs:
 /// ============================
 ///   app.UseMiddleware&lt;TenantMiddleware&gt;();  // Add to pipeline
@@ -95,7 +102,40 @@ public class TenantMiddleware
             return; // SHORT-CIRCUIT: Don't call _next, request stops here
         }
 
-        // Step 2: Look up tenant (with caching to avoid hitting master DB every request)
+        var isAuthenticated = context.User.Identity?.IsAuthenticated == true;
+
+        // Step 2: SECURITY — Cross-check tenant header against JWT tenant_id claim.
+        // If the user is authenticated, their token contains a tenant_id claim set at login.
+        // The X-Tenant-Id header MUST match. This prevents authenticated users from
+        // pivoting to a different tenant's data by simply changing the header.
+        //
+        // R2-DEV-02A: this runs BEFORE the tenant lookup. The lookup below reads the tenant's
+        // current status from the master database, so running it first would let a user of
+        // tenant A learn, in real time, whether tenant B exists or is active, just by changing
+        // the header. Rejecting the mismatch first means an authenticated caller only ever
+        // learns the status of the tenant their own token names, and costs no database read.
+        if (isAuthenticated)
+        {
+            var tokenTenantId = context.User.FindFirst("tenant_id")?.Value;
+            if (tokenTenantId is not null
+                && !string.Equals(tokenTenantId, tenantIdentifier.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning(
+                    "SECURITY: Tenant mismatch — header={HeaderTenant}, token={TokenTenant}, user={User}, IP={IP}",
+                    tenantIdentifier, tokenTenantId,
+                    context.User.Identity!.Name, context.Connection.RemoteIpAddress);
+
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                await context.Response.WriteAsJsonAsync(new
+                {
+                    error = "Tenant context mismatch. The X-Tenant-Id header does not match your authentication context.",
+                    code = "TENANT_MISMATCH"
+                });
+                return;
+            }
+        }
+
+        // Step 3: Look up tenant.
         //
         // The cache key uses the CANONICAL tenant code, not the raw header. Tenant resolution
         // is case-insensitive, so "ACME" and "acme" are the same tenant — keying the cache on
@@ -105,12 +145,47 @@ public class TenantMiddleware
         // applies, so the key and the lookup can no longer disagree.
         //
         // The header itself is deliberately left untouched below: the value passed to the
-        // store, the values logged, and the JWT cross-check at Step 4 all still see exactly
+        // store, the values logged, and the JWT cross-check at Step 2 all still see exactly
         // what the client sent.
         var cacheKey = $"tenant:{TenantCode.Normalize(tenantIdentifier!)}";
-        if (!cache.TryGetValue(cacheKey, out TenantInfo? tenant))
+        TenantInfo? tenant;
+
+        if (isAuthenticated)
         {
-            // Cache miss — query the tenant store (master database)
+            // R2-DEV-02A: an authenticated request NEVER trusts a cached status. A tenant
+            // deactivated (or removed) after its entry was cached must be refused on the very
+            // next authenticated request, not up to 30 minutes later. The store reads the
+            // master database directly (no tracking, no cache of its own).
+            try
+            {
+                tenant = await tenantStore.GetByIdentifierAsync(tenantIdentifier!);
+            }
+            catch (Exception ex) when (!context.RequestAborted.IsCancellationRequested)
+            {
+                // FAIL CLOSED: if the authoritative status cannot be read, the request is
+                // refused. Deliberately no fallback to a cached entry — a stale "active" is
+                // exactly what this check exists to stop trusting.
+                _logger.LogError(ex, "Tenant status lookup failed for {TenantId}; request denied", tenantIdentifier.ToString());
+                context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+                await context.Response.WriteAsJsonAsync(new
+                {
+                    error = "Tenant status could not be verified. Try again later.",
+                    code = "TENANT_STATUS_UNAVAILABLE"
+                });
+                return;
+            }
+
+            // Keep the shared cache in step with what was just read, so unauthenticated
+            // requests (which still use it) see the fresh status too.
+            if (tenant is null)
+                cache.Remove(cacheKey);
+            else
+                cache.Set(cacheKey, tenant, CacheDuration);
+        }
+        else if (!cache.TryGetValue(cacheKey, out tenant))
+        {
+            // Unauthenticated (anonymous endpoints such as refresh or forgot-password): the
+            // existing 30-minute cache still applies. Cache miss — query the master database.
             tenant = await tenantStore.GetByIdentifierAsync(tenantIdentifier!);
 
             if (tenant is not null)
@@ -121,10 +196,10 @@ public class TenantMiddleware
             }
         }
 
-        // Step 3: Validate tenant exists and is active
+        // Step 4: Validate tenant exists and is active
         if (tenant is null)
         {
-            _logger.LogWarning("Tenant not found: {TenantId}", tenantIdentifier);
+            _logger.LogWarning("Tenant not found: {TenantId}", tenantIdentifier.ToString());
             context.Response.StatusCode = StatusCodes.Status404NotFound;
             await context.Response.WriteAsJsonAsync(new
             {
@@ -136,7 +211,7 @@ public class TenantMiddleware
 
         if (!tenant.IsActive)
         {
-            _logger.LogWarning("Inactive tenant attempted access: {TenantId}", tenantIdentifier);
+            _logger.LogWarning("Inactive tenant attempted access: {TenantId}", tenantIdentifier.ToString());
             context.Response.StatusCode = StatusCodes.Status403Forbidden;
             await context.Response.WriteAsJsonAsync(new
             {
@@ -144,31 +219,6 @@ public class TenantMiddleware
                 code = "TENANT_INACTIVE"
             });
             return;
-        }
-
-        // Step 4: SECURITY — Cross-check tenant header against JWT tenant_id claim
-        // If the user is authenticated, their token contains a tenant_id claim set at login.
-        // The X-Tenant-Id header MUST match. This prevents authenticated users from
-        // pivoting to a different tenant's data by simply changing the header.
-        if (context.User.Identity?.IsAuthenticated == true)
-        {
-            var tokenTenantId = context.User.FindFirst("tenant_id")?.Value;
-            if (tokenTenantId is not null
-                && !string.Equals(tokenTenantId, tenantIdentifier.ToString(), StringComparison.OrdinalIgnoreCase))
-            {
-                _logger.LogWarning(
-                    "SECURITY: Tenant mismatch — header={HeaderTenant}, token={TokenTenant}, user={User}, IP={IP}",
-                    tenantIdentifier, tokenTenantId,
-                    context.User.Identity.Name, context.Connection.RemoteIpAddress);
-
-                context.Response.StatusCode = StatusCodes.Status403Forbidden;
-                await context.Response.WriteAsJsonAsync(new
-                {
-                    error = "Tenant context mismatch. The X-Tenant-Id header does not match your authentication context.",
-                    code = "TENANT_MISMATCH"
-                });
-                return;
-            }
         }
 
         // Step 5: Store tenant info in HttpContext.Items for downstream use
