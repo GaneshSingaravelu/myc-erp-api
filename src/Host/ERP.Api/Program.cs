@@ -5,7 +5,6 @@ using ERP.Identity.Extensions;
 using ERP.Identity.Seed;
 using ERP.Infrastructure.Extensions;
 using ERP.Infrastructure.Tenant;
-using ERP.Notifications.Hubs;
 using ERP.Persistence.Extensions;
 using ERP.Production.Infrastructure.Extensions;
 using ERP.Workflow.Infrastructure.Extensions;
@@ -204,8 +203,11 @@ app.UseSerilogRequestLogging();
 // 9. Map Controllers (routes requests to controller actions)
 app.MapControllers();
 
-// 10. Map SignalR Hubs
-app.MapHub<ErpNotificationHub>("/hubs/notifications");
+// 10. SignalR hubs — INTENTIONALLY NOT MAPPED (R2-DEV-02B-2A).
+// ErpNotificationHub (/hubs/notifications) is disabled: nothing publishes to it, no client
+// uses it, and its connection/group authorization is not yet tenant-safe. The hub class and
+// AddSignalR() stay in place for Phase 3. Re-mapping it requires explicit security approval;
+// ArchitectureTests.NotificationHub_Should_Not_Be_Mapped fails if a MapHub call returns.
 
 // 11. Health Check endpoint
 app.MapHealthChecks("/health");
