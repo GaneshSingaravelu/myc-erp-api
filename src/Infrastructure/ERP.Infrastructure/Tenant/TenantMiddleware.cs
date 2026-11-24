@@ -114,15 +114,21 @@ public class TenantMiddleware
         // tenant A learn, in real time, whether tenant B exists or is active, just by changing
         // the header. Rejecting the mismatch first means an authenticated caller only ever
         // learns the status of the tenant their own token names, and costs no database read.
+        //
+        // R2-DEV-02B-1: the tenant_id claim is MANDATORY for an authenticated request. Every
+        // access token this API issues carries it (AuthService login and refresh), so a token
+        // without it — or with an empty/whitespace value — is not one of ours to trust, and
+        // must not let the X-Tenant-Id header alone choose the tenant. It gets the same
+        // 403 TENANT_MISMATCH, decided before any cache access or database lookup.
         if (isAuthenticated)
         {
             var tokenTenantId = context.User.FindFirst("tenant_id")?.Value;
-            if (tokenTenantId is not null
-                && !string.Equals(tokenTenantId, tenantIdentifier.ToString(), StringComparison.OrdinalIgnoreCase))
+            if (string.IsNullOrWhiteSpace(tokenTenantId)
+                || !string.Equals(tokenTenantId, tenantIdentifier.ToString(), StringComparison.OrdinalIgnoreCase))
             {
                 _logger.LogWarning(
                     "SECURITY: Tenant mismatch — header={HeaderTenant}, token={TokenTenant}, user={User}, IP={IP}",
-                    tenantIdentifier, tokenTenantId,
+                    tenantIdentifier.ToString(), tokenTenantId ?? "<missing>",
                     context.User.Identity!.Name, context.Connection.RemoteIpAddress);
 
                 context.Response.StatusCode = StatusCodes.Status403Forbidden;
