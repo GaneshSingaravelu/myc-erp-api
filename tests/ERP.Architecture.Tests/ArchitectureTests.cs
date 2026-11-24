@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text.RegularExpressions;
 using NetArchTest.Rules;
 
 namespace ERP.Architecture.Tests;
@@ -222,5 +223,76 @@ public class ArchitectureTests
             "Use IUserRepository / IRoleRepository / IPermissionRepository / IMenuRepository / " +
             "IFeatureFlagRepository / ITenantRepository + IMasterUnitOfWork instead. " +
             $"Offending types: {string.Join(", ", offenders)}");
+    }
+
+    // ─── SIGNALR: notification hub endpoint stays disabled (R2-DEV-02B-2A) ───
+
+    /// <summary>
+    /// ErpNotificationHub was unmapped because its connection and group authorization are
+    /// not tenant-safe. Mapping it again — in Program.cs or in any extension method — must be
+    /// a deliberate, security-approved change that also updates this test.
+    ///
+    /// This is a SOURCE scan, not a runtime check: this test project does not reference the
+    /// ERP.Api host, so it cannot inspect the built endpoint table. Comments are ignored, so
+    /// documentation that mentions the old mapping does not trip it.
+    /// </summary>
+    [Fact]
+    public void NotificationHub_Should_Not_Be_Mapped()
+    {
+        var srcRoot = Path.Combine(FindRepositoryRoot(), "src");
+        var mapHub = new Regex(@"\bMapHub\s*<", RegexOptions.Compiled);
+        const string hubPath = "\"/hubs/notifications\"";
+
+        var offenders = new List<string>();
+        foreach (var file in Directory.EnumerateFiles(srcRoot, "*.cs", SearchOption.AllDirectories))
+        {
+            if (IsBuildOutput(file)) continue;
+
+            var code = StripComments(File.ReadAllText(file));
+            if (mapHub.IsMatch(code) || code.Contains(hubPath, StringComparison.OrdinalIgnoreCase))
+                offenders.Add(Path.GetRelativePath(srcRoot, file));
+        }
+
+        Assert.True(offenders.Count == 0,
+            "SignalR hub mapping found. ErpNotificationHub (/hubs/notifications) is disabled until " +
+            "its connection and group authorization are tenant-safe; re-enabling it needs explicit " +
+            $"security approval. Offending files: {string.Join(", ", offenders)}");
+    }
+
+    [Fact]
+    public void NotificationHub_Guard_Scans_The_Real_Host_File()
+    {
+        // Guards the guard: if the host moved or the scan root were wrong, the test above would
+        // pass vacuously. The composition root must exist where the scan looks for it.
+        var program = Path.Combine(FindRepositoryRoot(), "src", "Host", "ERP.Api", "Program.cs");
+
+        Assert.True(File.Exists(program), $"Expected host composition root at {program}");
+        Assert.Contains("AddSignalR", StripComments(File.ReadAllText(program)));
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
+        {
+            if (File.Exists(Path.Combine(dir.FullName, "ERP.slnx")))
+                return dir.FullName;
+        }
+
+        throw new InvalidOperationException("ERP.slnx not found above " + AppContext.BaseDirectory);
+    }
+
+    private static bool IsBuildOutput(string path)
+    {
+        var sep = Path.DirectorySeparatorChar;
+        return path.Contains($"{sep}bin{sep}") || path.Contains($"{sep}obj{sep}");
+    }
+
+    /// <summary>Removes /* block */ comments and whole-line // and /// comments.</summary>
+    private static string StripComments(string source)
+    {
+        var withoutBlocks = Regex.Replace(source, @"/\*.*?\*/", string.Empty, RegexOptions.Singleline);
+        var lines = withoutBlocks.Split('\n')
+            .Where(line => !line.TrimStart().StartsWith("//", StringComparison.Ordinal));
+        return string.Join('\n', lines);
     }
 }
