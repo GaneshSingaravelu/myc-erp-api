@@ -146,25 +146,32 @@ public class AuthController : ControllerBase
     /// Requests a password reset token for the given email.
     /// Always returns 200 (email enumeration prevention). In non-production environments
     /// the token is included in the response body for smoke testing.
+    ///
+    /// The token is bound to the X-Tenant-Id tenant (R2-DEV-02B-3A) and can only be redeemed
+    /// through that same tenant. TenantMiddleware already requires the header on this route;
+    /// a blank value still gets the generic 200 and nothing is issued.
     /// </summary>
     [HttpPost("forgot-password")]
     [AllowAnonymous]
-    public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequest request)
+    public async Task<IActionResult> ForgotPassword(
+        [FromBody] ForgotPasswordRequest request, [FromHeader(Name = "X-Tenant-Id")] string? tenantId)
     {
         var exposeToken = !_env.IsProduction();
-        var result = await _authService.ForgotPasswordAsync(request, exposeToken);
+        var result = await _authService.ForgotPasswordAsync(request, tenantId ?? string.Empty, exposeToken);
         return Ok(result.Value);
     }
 
     /// <summary>
     /// POST /api/v1/auth/reset-password
-    /// Applies a new password using a previously issued reset token.
+    /// Applies a new password using a previously issued reset token. The X-Tenant-Id must be
+    /// the tenant the token was issued through.
     /// </summary>
     [HttpPost("reset-password")]
     [AllowAnonymous]
-    public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequest request)
+    public async Task<IActionResult> ResetPassword(
+        [FromBody] ResetPasswordRequest request, [FromHeader(Name = "X-Tenant-Id")] string? tenantId)
     {
-        var result = await _authService.ResetPasswordAsync(request);
+        var result = await _authService.ResetPasswordAsync(request, tenantId ?? string.Empty);
 
         if (result.IsFailure)
             return result.Error.Code switch

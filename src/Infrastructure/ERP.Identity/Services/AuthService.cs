@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Cryptography;
 using ERP.Application.Abstractions.Email;
@@ -528,28 +529,119 @@ public class AuthService : IAuthService
         return Result.Success();
     }
 
-    public async Task<Result<ForgotPasswordResponse>> ForgotPasswordAsync(ForgotPasswordRequest request, bool exposeToken = false)
+    /// <summary>
+    /// Issues a password-reset token bound to the tenant the request was made through.
+    ///
+    /// R2-DEV-02B-3A — TENANT-BOUND RECOVERY:
+    /// AppUser is a global identity with one password, but recovery is only offered through a
+    /// tenant that is ACTIVE (read from the Master DB, not TenantMiddleware's cache) and in which
+    /// the user holds an ACTIVE membership. The issued token is bound to that tenant's Id inside
+    /// the stored hash (see <see cref="ComputeResetTokenHash"/>), so it can only be redeemed
+    /// through the same tenant.
+    ///
+    /// Every refusal — unknown/inactive tenant, unknown/inactive user, no membership, or a
+    /// Master DB failure while checking any of them — returns the SAME generic success and
+    /// issues nothing, leaving any existing token untouched. A caller cannot tell an unknown
+    /// account from a missing or inactive membership.
+    ///
+    /// R2-DEV-02B-3A C1 — PERSISTENCE AND DELIVERY FAILURES:
+    /// A database failure while SAVING the token also returns the generic response. Its commit
+    /// outcome is treated as UNKNOWN (an exception from SaveChanges does not prove the write was
+    /// rolled back), so the plaintext token is discarded: it is never emailed and never returned.
+    /// A token that did get stored without being delivered cannot be used — nobody holds its
+    /// plaintext — and expires in 15 minutes, but it may have replaced an earlier outstanding
+    /// token (single token per user). An email failure AFTER a successful save keeps the
+    /// generic response; the stored token simply goes undelivered. Both are logged at Error with
+    /// a per-call operation id and the trace id. Only recognisable database failures are
+    /// absorbed; any other exception (a bug) still surfaces.
+    ///
+    /// Logs never contain the plaintext token, its hash, passwords or connection strings; the
+    /// user is identified by Id, not email.
+    /// </summary>
+    public async Task<Result<ForgotPasswordResponse>> ForgotPasswordAsync(
+        ForgotPasswordRequest request, string tenantId, bool exposeToken = false)
     {
-        var normalizedEmail = request.Email.ToUpperInvariant();
-        var user = await _users.GetByNormalizedEmailAsync(normalizedEmail);
+        var generic = Result.Success(new ForgotPasswordResponse(GenericForgotPasswordMessage));
+        var operationId = Guid.NewGuid().ToString("N");
+        var traceId = Activity.Current?.TraceId.ToString();
 
-        // Always return success to prevent email enumeration (don't reveal whether the email exists)
-        if (user is null || !user.IsActive)
+        Tenant? tenant;
+        AppUser? user;
+        try
         {
-            _logger.LogInformation("ForgotPassword: no active user found for email (not disclosed to caller)");
-            return Result.Success(new ForgotPasswordResponse("If that email is registered, a reset link has been sent."));
+            tenant = await ResolveRecoveryTenantAsync(tenantId);
+            if (tenant is null || !tenant.IsActive)
+            {
+                _logger.LogInformation(
+                    "ForgotPassword {OperationId}: tenant missing, unknown or inactive; no token issued (not disclosed to caller)",
+                    operationId);
+                return generic;
+            }
+
+            user = string.IsNullOrWhiteSpace(request.Email)
+                ? null
+                : await _users.GetByNormalizedEmailAsync(request.Email.ToUpperInvariant());
+
+            // Always return success to prevent email enumeration (don't reveal whether the email exists)
+            if (user is null || !user.IsActive)
+            {
+                _logger.LogInformation(
+                    "ForgotPassword {OperationId}: no active user found for email (not disclosed to caller)", operationId);
+                return generic;
+            }
+
+            if (!await _users.IsAssignedToTenantAsync(user.Id, tenant.Id))
+            {
+                _logger.LogInformation(
+                    "ForgotPassword {OperationId}: user {UserId} is not an active member of tenant {TenantCode}; no token issued (not disclosed to caller)",
+                    operationId, user.Id, tenant.Code);
+                return generic;
+            }
+        }
+        catch (Exception ex) when (IsExpectedDatabaseFailure(ex))
+        {
+            // FAIL CLOSED without disclosure: if tenant authority or membership cannot be
+            // verified, no token is issued and the caller sees the same generic response.
+            _logger.LogError(ex,
+                "ForgotPassword {OperationId} (trace {TraceId}): Master DB failure while verifying tenant, account or membership; no token issued, generic response returned",
+                operationId, traceId);
+            return generic;
         }
 
         // Generate a cryptographically secure random token
         var plainToken = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))
             .Replace('+', '-').Replace('/', '_').TrimEnd('='); // base64url-safe
 
-        user.PasswordResetTokenHash = ComputeSha256Hash(plainToken);
+        // One token per user (single hash/expiry columns): issuing replaces any earlier token,
+        // including one issued through another tenant.
+        user.PasswordResetTokenHash = ComputeResetTokenHash(tenant.Id, plainToken);
         user.PasswordResetTokenExpiry = DateTime.UtcNow.AddMinutes(15);
 
-        await _unitOfWork.SaveChangesAsync();
+        try
+        {
+            await _unitOfWork.SaveChangesAsync();
+        }
+        catch (Exception ex) when (IsExpectedDatabaseFailure(ex))
+        {
+            // COMMIT OUTCOME UNKNOWN. The write may have been applied (e.g. the connection broke
+            // after the server committed) or not. Either way the plaintext is discarded here and
+            // never delivered, so a stored-but-undelivered token is unusable; it is NOT removed.
+            //
+            // The tracked entity is deliberately NOT reverted. EF keeps the properties marked
+            // Modified after a failed save, so setting the old values back would not undo
+            // anything — and if anything later in this scope did save, it would write the OLD
+            // hash back, which could revive an earlier token that was redeemed in the meantime.
+            // Left as is, a later save could only write this NEW, undelivered (unusable) hash.
 
-        _logger.LogInformation("PasswordResetToken issued for user {UserId}", user.Id);
+            _logger.LogError(ex,
+                "ForgotPassword {OperationId} (trace {TraceId}): saving the reset token for user {UserId} in tenant {TenantCode} failed; commit outcome UNKNOWN (the token may or may not be stored, and may have replaced an earlier one). Token discarded and not delivered; generic response returned",
+                operationId, traceId, user.Id, tenant.Code);
+            return generic;
+        }
+
+        _logger.LogInformation(
+            "ForgotPassword {OperationId}: PasswordResetToken issued for user {UserId} in tenant {TenantCode}",
+            operationId, user.Id, tenant.Code);
 
         if (!exposeToken)
         {
@@ -569,24 +661,99 @@ public class AuthService : IAuthService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to send password reset email to {Email}", request.Email);
+                // The token IS stored but was not delivered. The caller still gets the generic
+                // response; monitoring sees the Error. The user can simply request a new token.
+                _logger.LogError(ex,
+                    "ForgotPassword {OperationId} (trace {TraceId}): reset token stored for user {UserId} in tenant {TenantCode} but email delivery FAILED; generic response returned",
+                    operationId, traceId, user.Id, tenant.Code);
             }
         }
 
         return Result.Success(new ForgotPasswordResponse(
-            "If that email is registered, a reset link has been sent.",
+            GenericForgotPasswordMessage,
             exposeToken ? plainToken : null));
     }
 
-    public async Task<Result> ResetPasswordAsync(ResetPasswordRequest request)
+    /// <summary>
+    /// True when the exception chain contains a recognisable database failure:
+    /// <list type="bullet">
+    /// <item>an ADO.NET <see cref="System.Data.Common.DbException"/> (SqlException, NpgsqlException)
+    /// or a <see cref="TimeoutException"/>;</item>
+    /// <item>an exception TYPE from EF Core, SqlClient or Npgsql (DbUpdateException,
+    /// RetryLimitExceededException, …), matched by namespace name;</item>
+    /// <item>any exception THROWN FROM INSIDE the SqlClient or Npgsql provider assemblies, whatever
+    /// its type. SqlClient reports connection-pool exhaustion ("Timeout expired … obtaining a
+    /// connection from the pool") as a plain InvalidOperationException with no inner exception;
+    /// its <see cref="Exception.Source"/> is the throwing assembly.</item>
+    /// </list>
+    /// Matching by name keeps this service free of an EF Core / provider dependency (pinned by the
+    /// IdentityServices_Should_Not_Depend_On_EfCore architecture test). Anything else — including
+    /// an InvalidOperationException raised by application code or by EF Core itself (e.g. context
+    /// misuse) — is treated as a bug and is not absorbed.
+    /// </summary>
+    private static bool IsExpectedDatabaseFailure(Exception ex)
     {
+        for (Exception? e = ex; e is not null; e = e.InnerException)
+        {
+            if (e is System.Data.Common.DbException or TimeoutException)
+                return true;
+
+            var ns = e.GetType().Namespace ?? string.Empty;
+            if (ns.StartsWith("Microsoft.EntityFrameworkCore", StringComparison.Ordinal)
+                || ns.StartsWith("Microsoft.Data.SqlClient", StringComparison.Ordinal)
+                || ns.StartsWith("Npgsql", StringComparison.Ordinal))
+                return true;
+
+            if (IsThrownByDatabaseProvider(e))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsThrownByDatabaseProvider(Exception e)
+    {
+        var source = e.Source ?? string.Empty;
+        return source.StartsWith("Microsoft.Data.SqlClient", StringComparison.Ordinal)
+            || source.StartsWith("Core Microsoft SqlClient Data Provider", StringComparison.Ordinal)
+            || source.StartsWith("Npgsql", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Redeems a tenant-bound password-reset token.
+    ///
+    /// R2-DEV-02B-3A — the tenant is re-read from the Master DB and must be active; the token
+    /// must have been issued through THIS tenant (the binding is inside the hash, so a token
+    /// from tenant A never matches under tenant B, even for a member of both); and the user's
+    /// membership in this tenant must still be active. Tokens stored before tenant binding
+    /// (unbound hashes) can never match and are rejected — there is no legacy fallback.
+    ///
+    /// Order matters for disclosure: the token is verified BEFORE expiry, so only a caller who
+    /// holds the correct token can learn that it expired; anyone else gets the generic
+    /// invalid-token error whatever the account's state. A Master DB failure propagates and
+    /// the reset does not happen (fail closed).
+    /// </summary>
+    public async Task<Result> ResetPasswordAsync(ResetPasswordRequest request, string tenantId)
+    {
+        var invalid = Result.Failure(Error.Validation("Auth.InvalidResetToken", "Invalid or expired password reset token."));
+
+        var tenant = await ResolveRecoveryTenantAsync(tenantId);
+        if (tenant is null || !tenant.IsActive)
+            return invalid;
+
+        if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrEmpty(request.Token))
+            return invalid;
+
         var normalizedEmail = request.Email.ToUpperInvariant();
         var user = await _users.GetByNormalizedEmailAsync(normalizedEmail);
 
         if (user is null || !user.IsActive
             || user.PasswordResetTokenHash is null
             || user.PasswordResetTokenExpiry is null)
-            return Result.Failure(Error.Validation("Auth.InvalidResetToken", "Invalid or expired password reset token."));
+            return invalid;
+
+        if (!ResetTokenMatches(user.PasswordResetTokenHash, tenant.Id, request.Token))
+            return invalid;
 
         if (user.PasswordResetTokenExpiry < DateTime.UtcNow)
         {
@@ -597,9 +764,11 @@ public class AuthService : IAuthService
             return Result.Failure(Error.Validation("Auth.ResetTokenExpired", "Password reset token has expired. Please request a new one."));
         }
 
-        var suppliedHash = ComputeSha256Hash(request.Token);
-        if (suppliedHash != user.PasswordResetTokenHash)
-            return Result.Failure(Error.Validation("Auth.InvalidResetToken", "Invalid or expired password reset token."));
+        if (!await _users.IsAssignedToTenantAsync(user.Id, tenant.Id))
+        {
+            _logger.LogWarning("ResetPassword: user {UserId} is no longer an active member of tenant {TenantCode}", user.Id, tenant.Code);
+            return invalid;
+        }
 
         // Check password history
         var recentPasswords = await _passwordHistory.GetRecentForUserAsync(user.Id, PasswordHistoryCount);
@@ -647,6 +816,41 @@ public class AuthService : IAuthService
     {
         var bytes = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(input));
         return Convert.ToHexString(bytes).ToLowerInvariant();
+    }
+
+    private const string GenericForgotPasswordMessage = "If that email is registered, a reset link has been sent.";
+
+    /// <summary>
+    /// Domain-separated, versioned binding of a reset token to a tenant. The stored value keeps
+    /// the existing format (lowercase SHA-256 hex, 64 chars, same column), so no schema change.
+    /// The token is base64url (no ':'), and the tenant Id has a fixed "D" format, so the input
+    /// is unambiguous. A pre-binding hash (SHA-256 of the bare token) can never equal this.
+    /// </summary>
+    private const string ResetTokenBindingPrefix = "erp-pwreset-v2:";
+
+    private static string ComputeResetTokenHash(Guid tenantId, string token) =>
+        ComputeSha256Hash($"{ResetTokenBindingPrefix}{tenantId:D}:{token}");
+
+    private static bool ResetTokenMatches(string storedHash, Guid tenantId, string suppliedToken)
+    {
+        var supplied = System.Text.Encoding.ASCII.GetBytes(ComputeResetTokenHash(tenantId, suppliedToken));
+        var stored = System.Text.Encoding.ASCII.GetBytes(storedHash);
+        return CryptographicOperations.FixedTimeEquals(supplied, stored);
+    }
+
+    /// <summary>
+    /// Resolves the recovery tenant from the Master DB (authoritative — never TenantMiddleware's
+    /// cache). Accepts a tenant Code or Id, exactly as login does. Returns null when the value is
+    /// blank or names no tenant. Activity is checked by the caller.
+    /// </summary>
+    private async Task<Tenant?> ResolveRecoveryTenantAsync(string tenantId)
+    {
+        if (string.IsNullOrWhiteSpace(tenantId))
+            return null;
+
+        return Guid.TryParse(tenantId, out var id)
+            ? await _tenants.GetByIdAsync(id)
+            : await _tenants.GetByCodeAsync(tenantId);
     }
 
     /// <summary>
