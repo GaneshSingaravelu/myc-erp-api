@@ -53,6 +53,7 @@ public static class Simulation
                         Checks.L8 => Evaluator.CodeCase(p, k, CodeCase(p, k)),
                         Checks.L9 => Evaluator.Seed(p, k, seeds[p] = Seed()),
                         Checks.L11 => Evaluator.DownUp(p, k, new DownUpMeasurement(0, 0, truth.Tables.Length, truth.Lineage(p)), e),
+                        Checks.L10 => Evaluator.Upgrade(p, k, Upgrade(p, truth), e),
                         _ => throw new InvalidOperationException(id),
                     });
                 }
@@ -60,8 +61,37 @@ public static class Simulation
         }
 
         report.Add(Evaluator.SeedEquivalence(seeds.GetValueOrDefault(Provider.SqlServer), seeds.GetValueOrDefault(Provider.PostgreSql)));
-        report.Add(Evaluator.Deferred());
+        report.Add(Evaluator.DeferredAppDb());
         return report;
+    }
+
+    /// <summary>
+    /// A canned, fully consistent Master L-10 cycle: Phase 1 head -> upgrade -> back -> upgrade,
+    /// identical fingerprints throughout, Company objects present only after an Up, every probe
+    /// rejected and rolled back. The self-test derives each failure scenario from this.
+    /// </summary>
+    internal static UpgradeMeasurement Upgrade(Provider p, ContextExpectations truth)
+    {
+        var u = truth.Upgrade ?? throw new InvalidOperationException("no upgrade expectation pinned");
+        var lineage = truth.Lineage(p);
+        var from = Array.IndexOf(lineage, u.From(p));
+        var before = lineage[..(from + 1)];
+        var up = lineage[..(from + 2)];
+
+        var upgraded = Schema(p, truth);
+        var phase1 = upgraded with { Tables = upgraded.Tables.Where(t => t != "Companies").ToArray() };
+        var shape = new CompanyShape(true, u.CompanyColumns, [], true, true, true, true, u.DeleteAction(p));
+        var fingerprints = u.FixtureTables.ToDictionary(
+            t => t, t => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("simulated-fixture-" + t))).ToLowerInvariant());
+
+        return new UpgradeMeasurement(
+            new UpgradeStage("before", before, phase1, CompanyShape.Absent, fingerprints, -1, -1),
+            new UpgradeStage("after-up", up, upgraded, shape, fingerprints, 0, 0),
+            new UpgradeStage("after-down", before, phase1, CompanyShape.Absent, fingerprints, -1, -1),
+            new UpgradeStage("after-re-up", up, upgraded, shape, fingerprints, 0, 0),
+            u.Probes.Select(n => new ProbeResult(n, Rejected: true, RolledBack: true, "simulated")).ToList(),
+            u.FixtureRows,
+            new Dictionary<string, long>(Evaluator.UpgradeFixtureCounts));
     }
 
     private static SchemaMeasurement Schema(Provider p, ContextExpectations truth) => new(
@@ -118,7 +148,9 @@ public static class SelfTest
         await LiveRunner.RunAsync(l1a, new RunOptions(true, all, contexts), new Dictionary<string, string?>(), Expectations.Approved, CancellationToken.None);
         Expect("PC-L1a", l1a.Results.Count == matrix, $"full matrix reported ({l1a.Results.Count}/{matrix})");
         Expect("PC-L1a", l1a.Count(Classification.Pass) == 0 && l1a.Count(Classification.ExpectedDifference) == 0, "no live check reports PASS or EXPECTED DIFFERENCE");
-        Expect("PC-L1a", l1a.Count(Classification.SkippedNoEndpoint) == matrix - 1 && l1a.Count(Classification.Deferred) == 1, "every check SKIPPED except L-10 DEFERRED");
+        Expect("PC-L1a", l1a.Count(Classification.SkippedNoEndpoint) == matrix - 1 && l1a.Count(Classification.Deferred) == 1
+                         && l1a.Results.Single(r => r.Classification == Classification.Deferred).Scope == "All/AppDb",
+            "every check SKIPPED (Master L-10 included) except AppDb L-10 DEFERRED");
         Expect("PC-L1a", l1a.ExitCode == ExitCodes.Incomplete, $"exit code {l1a.ExitCode} == {ExitCodes.Incomplete} (incomplete)");
         Expect("PC-L1a", l1a.Verdict.Contains("NOT verified") && !l1a.Verdict.Contains("Full live matrix executed"), "no live-verification success claim");
 
@@ -167,7 +199,9 @@ public static class SelfTest
         Expect("PC-L4", l4.Count(Classification.FailDefect) == 0 && l4.Count(Classification.SkippedNoEndpoint) == 0, "no FAIL, no SKIPPED");
         Expect("PC-L4", differences.SequenceEqual(["L-3 PostgreSql/Master", "L-4 PostgreSql/AppDb", "L-8 PostgreSql/AppDb", "L-8 PostgreSql/Master"]),
             $"expected differences exactly as approved ({string.Join(", ", differences)})");
-        Expect("PC-L4", l4.Count(Classification.Deferred) == 1 && l4.Results.Single(r => r.Classification == Classification.Deferred).Id == Checks.L10, "L-10 explicitly DEFERRED");
+        Expect("PC-L4", l4.Count(Classification.Deferred) == 1
+                        && l4.Results.Single(r => r.Classification == Classification.Deferred) is { Id: Checks.L10, Scope: "All/AppDb" },
+            "AppDb L-10 explicitly DEFERRED (the only deferral)");
         Expect("PC-L4", l4.Count(Classification.Pass) == matrix - differences.Length - 1, $"PASS count {l4.Count(Classification.Pass)} == {matrix - differences.Length - 1}");
         Expect("PC-L4", l4.Verdict.Contains("SIMULATION — NOT LIVE EVIDENCE") && l4.Verdict.Contains("No live parity claim") && l4.Verdict.Contains("DB-03 PARTIALLY OPEN"),
             "no misleading success claim; DB-03 PARTIALLY OPEN");
@@ -199,7 +233,8 @@ public static class SelfTest
         output.WriteLine("C1: missing endpoint -> SKIPPED (real live runner, empty environment)");
         var c1 = new Report(RunMode.Live);
         await LiveRunner.RunAsync(c1, new RunOptions(true, all, contexts), new Dictionary<string, string?>(), Expectations.Approved, CancellationToken.None);
-        Expect("C1", c1.Results.Where(r => r.Id != Checks.L10).All(r => r.Classification == Classification.SkippedNoEndpoint), "every check SKIPPED");
+        Expect("C1", c1.Results.Where(r => r.Scope != "All/AppDb").All(r => r.Classification == Classification.SkippedNoEndpoint),
+            "every check SKIPPED, Master L-10 included");
         Expect("C1", c1.Count(Classification.FailInfrastructure) == 0 && c1.Count(Classification.Pass) == 0, "no infrastructure failure, no PASS");
         Expect("C1", c1.ExitCode == ExitCodes.Incomplete && c1.Verdict.Contains("NOT verified"), $"exit {c1.ExitCode} == 2; no live success claim");
 
@@ -289,9 +324,14 @@ public static class SelfTest
         c8.CleanupFailures.Add("synthetic cleanup failure");
         Expect("C8", c8.ExitCode == ExitCodes.CleanupFailure && c8.Verdict.Contains("CLEANUP FAILURE"), $"exit {c8.ExitCode} == 5 with infrastructure, defect and safety present");
 
-        output.WriteLine("C9: L-10 remains DEFERRED");
-        Expect("C9", l4.Results.Single(r => r.Id == Checks.L10).Classification == Classification.Deferred
-                     && c1.Results.Single(r => r.Id == Checks.L10).Classification == Classification.Deferred, "DEFERRED in simulation and live paths");
+        output.WriteLine("C9: AppDb L-10 remains DEFERRED; Master L-10 is reported per provider and never as PASS without a run");
+        Expect("C9", l4.Results.Single(r => r.Scope == "All/AppDb").Classification == Classification.Deferred
+                     && c1.Results.Single(r => r.Scope == "All/AppDb").Classification == Classification.Deferred,
+            "AppDb L-10 DEFERRED in simulation and live paths");
+        Expect("C9", new[] { "SqlServer/Master", "PostgreSql/Master" }.All(scope =>
+                l4.Results.Single(r => r.Id == Checks.L10 && r.Scope == scope).Classification == Classification.Pass
+                && c1.Results.Single(r => r.Id == Checks.L10 && r.Scope == scope).Classification == Classification.SkippedNoEndpoint),
+            "Master L-10: one row per provider — simulated PASS in simulation, SKIPPED (not PASS) without an endpoint");
 
         output.WriteLine("C10: DB-03 remains PARTIALLY OPEN in every verdict");
         var refusal = new Report(RunMode.Live);
@@ -401,8 +441,391 @@ public static class SelfTest
         Expect("C11-H", Evaluator.SeedEquivalence(new SeedMeasurement(fullCounts, fp, true), new SeedMeasurement(fullCounts, other, true)).Classification == Classification.FailDefect,
             "different cross-provider fingerprints -> FAIL — DEFECT");
 
+        // ── P2-a.2: Master L-10, endpoint locality, lifecycle ownership — offline only ──
+        failures += await UpgradeControlsAsync(output);
+
         output.WriteLine(failures == 0 ? "SELF-TEST: all controls behaved as specified." : $"SELF-TEST: {failures} control assertion(s) FAILED.");
         return failures == 0 ? 0 : 1;
+    }
+
+    /// <summary>
+    /// U1..U7 — Master L-10 classification, endpoint locality and the L-10 database lifecycle.
+    /// Pure evaluation plus a FAKE lifecycle: no connection, no name resolution, no database.
+    /// </summary>
+    private static async Task<int> UpgradeControlsAsync(TextWriter output)
+    {
+        var failures = 0;
+        void Expect(string control, bool condition, string what)
+        {
+            output.WriteLine($"  [{(condition ? "ok" : "FAILED")}] {control}: {what}");
+            if (!condition) failures++;
+        }
+
+        var master = Expectations.Approved.Master;
+        var u = master.Upgrade!;
+        const DbContextKind k = DbContextKind.Master;
+
+        output.WriteLine("U1: pinned upgrade migrations are the last two of each approved Master lineage");
+        foreach (var p in new[] { Provider.SqlServer, Provider.PostgreSql })
+            Expect("U1", master.Lineage(p)[^2] == u.From(p) && master.Lineage(p)[^1] == u.To(p), $"{p}: {u.From(p)} -> {u.To(p)}");
+        Expect("U1", Expectations.Approved.AppDb.Upgrade is null, "AppDb has no pinned upgrade");
+
+        output.WriteLine("U2: a complete, consistent upgrade cycle -> PASS (per provider)");
+        foreach (var p in new[] { Provider.SqlServer, Provider.PostgreSql })
+        {
+            var r = Evaluator.Upgrade(p, k, Simulation.Upgrade(p, master), master);
+            Expect("U2", r.Classification == Classification.Pass && r.Scope == $"{p}/Master" && r.Id == Checks.L10, $"{p}: {Report.Label(r.Classification)}");
+        }
+
+        output.WriteLine("U3: every injected fault -> FAIL — DEFECT, naming stage and object");
+        var good = Simulation.Upgrade(Provider.PostgreSql, master);
+        string Fp(string seed) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(seed))).ToLowerInvariant();
+        Dictionary<string, string> Tamper(string table) => good.Before.Fingerprints.ToDictionary(kv => kv.Key, kv => kv.Key == table ? Fp("tampered") : kv.Value);
+        var faults = new (string Name, UpgradeMeasurement M, string Marker)[]
+        {
+            ("fingerprint differs after up", good with { AfterUp = good.AfterUp with { Fingerprints = Tamper("Tenants") } }, "after-up: Tenants fingerprint"),
+            ("fingerprint differs after down", good with { AfterDown = good.AfterDown with { Fingerprints = Tamper("Users") } }, "after-down: Users fingerprint"),
+            ("fingerprint differs after re-up", good with { AfterReUp = good.AfterReUp with { Fingerprints = Tamper("UserRoles") } }, "after-re-up: UserRoles fingerprint"),
+            ("fixture table not fingerprinted", good with { Before = good.Before with { Fingerprints = good.Before.Fingerprints.Where(kv => kv.Key != "Roles").ToDictionary() } }, "before: fingerprinted tables"),
+            ("non-NULL CompanyId after up", good with { AfterUp = good.AfterUp with { TenantsWithCompany = 1 } }, "after-up: 1 tenant(s) with non-NULL CompanyId"),
+            ("Companies not empty", good with { AfterReUp = good.AfterReUp with { CompaniesRows = 2 } }, "after-re-up: Companies has 2 row(s)"),
+            ("wrong history after up", good with { AfterUp = good.AfterUp with { History = good.Before.History } }, "after-up: history"),
+            ("wrong history after down", good with { AfterDown = good.AfterDown with { History = good.AfterUp.History } }, "after-down: history"),
+            ("Companies missing after re-up", good with { AfterReUp = good.AfterReUp with { Shape = CompanyShape.Absent } }, "after-re-up: Companies table missing"),
+            ("nullable Companies column", good with { AfterUp = good.AfterUp with { Shape = good.AfterUp.Shape with { NullableCompanyColumns = ["Code"] } } }, "nullable Companies columns [Code]"),
+            ("CompanyId NOT NULL", good with { AfterUp = good.AfterUp with { Shape = good.AfterUp.Shape with { TenantCompanyIdNullable = false } } }, "Tenants.CompanyId is NOT NULL"),
+            ("code index not unique", good with { AfterUp = good.AfterUp with { Shape = good.AfterUp.Shape with { CodeIndexUnique = false } } }, "IX_Companies_Code unique=False"),
+            ("FK cascades", good with { AfterUp = good.AfterUp with { Shape = good.AfterUp.Shape with { ForeignKeyDeleteAction = "CASCADE" } } }, "delete action 'CASCADE'"),
+            ("schema wrong after up", good with { AfterUp = good.AfterUp with { Schema = good.AfterUp.Schema with { ForeignKeys = 17 } } }, "after-up: schema"),
+            ("Company table left after down", good with { AfterDown = good.AfterDown with { Shape = good.AfterDown.Shape with { CompaniesTable = true } } }, "after-down: Companies table present"),
+            ("CompanyId left after down", good with { AfterDown = good.AfterDown with { Shape = good.AfterDown.Shape with { TenantCompanyIdColumn = true } } }, "after-down: Tenants.CompanyId present"),
+            ("schema not restored after down", good with { AfterDown = good.AfterDown with { Schema = good.AfterUp.Schema } }, "after-down: schema differs"),
+            ("FK probe accepted", good with { Probes = good.Probes.Select(x => x.Name == "invalid-company-fk" ? x with { Rejected = false } : x).ToList() }, "probe invalid-company-fk: not rejected"),
+            ("restrict probe accepted", good with { Probes = good.Probes.Select(x => x.Name == "restrict-delete" ? x with { Rejected = false } : x).ToList() }, "probe restrict-delete: not rejected"),
+            ("unique probe accepted", good with { Probes = good.Probes.Select(x => x.Name == "duplicate-code" ? x with { Rejected = false } : x).ToList() }, "probe duplicate-code: not rejected"),
+            ("probe rollback unconfirmed", good with { Probes = good.Probes.Select(x => x.Name == "restrict-delete" ? x with { RolledBack = false } : x).ToList() }, "probe restrict-delete: rollback not confirmed"),
+            ("probe missing", good with { Probes = good.Probes.Where(x => x.Name != "duplicate-code").ToList() }, "probe duplicate-code: not run"),
+            ("fixture rows short", good with { FixtureRows = 10 }, "fixture rows 10 != 11"),
+        };
+        foreach (var (name, m, marker) in faults)
+        {
+            var r = Evaluator.Upgrade(Provider.PostgreSql, k, m, master);
+            Expect("U3", r.Classification == Classification.FailDefect && r.Detail.Contains(marker, StringComparison.Ordinal), $"{name} -> {Report.Label(r.Classification)}");
+        }
+        var inconsistent = master with { Upgrade = u with { PostgreSqlTo = "29990101000000_NotTheNextMigration" } };
+        Expect("U3", Evaluator.Upgrade(Provider.PostgreSql, k, good, inconsistent).Detail.Contains("expectations inconsistent"), "pins not adjacent in the lineage -> FAIL");
+        Expect("U3", Evaluator.Upgrade(Provider.PostgreSql, k, good, Expectations.Approved.AppDb).Classification == Classification.FailDefect, "no pinned upgrade -> FAIL");
+
+        output.WriteLine("U4: success verdict names only providers with an actual Master L-10 PASS");
+        var live = new Report(RunMode.Live);
+        live.Add(Evaluator.Upgrade(Provider.SqlServer, k, Simulation.Upgrade(Provider.SqlServer, master), master));
+        live.Add(Evaluator.Upgrade(Provider.PostgreSql, k, Simulation.Upgrade(Provider.PostgreSql, master), master));
+        live.Add(Evaluator.DeferredAppDb());
+        Expect("U4", live.ExitCode == ExitCodes.Success && live.Verdict.Contains("Master L-10 verified live on [PostgreSql, SqlServer]")
+                     && live.Verdict.Contains("AppDb L-10 DEFERRED") && live.Verdict.Contains("DB-03 PARTIALLY OPEN"), live.Verdict);
+        var partial = new Report(RunMode.Live);
+        partial.Add(Evaluator.Upgrade(Provider.SqlServer, k, Simulation.Upgrade(Provider.SqlServer, master), master));
+        partial.Add(Evaluator.Skipped(Checks.L10, Provider.PostgreSql, k, "no endpoint"));
+        partial.Add(Evaluator.DeferredAppDb());
+        Expect("U4", partial.ExitCode == ExitCodes.Incomplete && !partial.Verdict.Contains("verified live"), "a SKIPPED provider is never reported verified (exit 2)");
+        var deferredOnly = new Report(RunMode.Live);
+        deferredOnly.Add(Evaluator.DeferredAppDb());
+        Expect("U4", deferredOnly.Results.Single() is { Scope: "All/AppDb", Classification: Classification.Deferred } && deferredOnly.Count(Classification.Pass) == 0,
+            "AppDb L-10 is DEFERRED, never PASS");
+
+        output.WriteLine("U5: endpoint locality — accepted only on an exact, loopback, owner-approved match (pure parsing)");
+        string? Locality(Provider p, string raw, string? expected)
+        {
+            try { return EndpointLocality.Validate(p, raw, expected); }
+            catch (SafetyRefusalException) { return null; }
+        }
+        const string sa = "User ID=nobody;Password=U5-SECRET;TrustServerCertificate=true;";
+        const string pa = "Username=nobody;Password=U5-SECRET;";
+        Expect("U5", Locality(Provider.SqlServer, "Server=localhost,14333;" + sa, "localhost,14333") == "localhost,14333", "SQL Server host,port exact match accepted");
+        Expect("U5", Locality(Provider.SqlServer, @"Server=LocalHost\SqlDev;" + sa, @"localhost\SQLDEV") == @"localhost\SQLDEV", "SQL Server named instance accepted (case-normalized)");
+        Expect("U5", Locality(Provider.PostgreSql, "Host=localhost;Port=5433;" + pa, "localhost:5433") == "localhost:5433", "PostgreSQL host:port exact match accepted");
+        Expect("U5", Locality(Provider.PostgreSql, "Host=::1;Port=5433;" + pa, "[::1]:5433") == "[::1]:5433", "PostgreSQL IPv6 loopback accepted");
+        var refused = new (Provider P, string Raw, string? Expected, string Why)[]
+        {
+            (Provider.SqlServer, "Server=localhost,14333;" + sa, null, "expected endpoint not set"),
+            (Provider.SqlServer, "Server=localhost,14333;" + sa, "   ", "expected endpoint blank"),
+            (Provider.SqlServer, "Server=localhost,14334;" + sa, "localhost,14333", "different port"),
+            (Provider.SqlServer, "Server=localhost;" + sa, "localhost,14333", "port omitted"),
+            (Provider.SqlServer, "Server=127.0.0.1,14333;" + sa, "localhost,14333", "equivalent-looking host not treated as equal"),
+            (Provider.SqlServer, @"Server=localhost\OTHER;" + sa, @"localhost\SQLDEV", "different instance"),
+            (Provider.SqlServer, "Server=db.example.com,1433;" + sa, "db.example.com,1433", "remote host (even when expected says so)"),
+            (Provider.SqlServer, "Server=203.0.113.5,1433;" + sa, "localhost,1433", "public IP"),
+            (Provider.SqlServer, "Server=tcp:localhost,1433;" + sa, "localhost,1433", "protocol prefix"),
+            (Provider.SqlServer, @"Server=np:\\.\pipe\sql\query;" + sa, "localhost", "named pipe"),
+            (Provider.SqlServer, @"Server=(localdb)\MSSQLLocalDB;" + sa, "localhost", "LocalDB"),
+            (Provider.SqlServer, "Server=localhost,1433;Failover Partner=localhost,1434;" + sa, "localhost,1433", "failover partner"),
+            (Provider.SqlServer, "Server=localhost,1433;MultiSubnetFailover=true;" + sa, "localhost,1433", "MultiSubnetFailover"),
+            (Provider.SqlServer, @"Server=localhost,1433;AttachDbFilename=C:\x.mdf;" + sa, "localhost,1433", "AttachDBFilename"),
+            (Provider.SqlServer, "Server=localhost,1,2;" + sa, "localhost,1,2", "ambiguous data source"),
+            (Provider.SqlServer, "Server=localhost,99999;" + sa, "localhost,99999", "invalid port"),
+            (Provider.SqlServer, "this is not a connection string", "localhost,1433", "unparseable connection string"),
+            (Provider.SqlServer, "Server=localhost,1433;NotARealKeyword=1;" + sa, "localhost,1433", "unknown keyword"),
+            (Provider.PostgreSql, "Host=localhost;Port=5433;" + pa, null, "expected endpoint not set"),
+            (Provider.PostgreSql, "Host=localhost;" + pa, "localhost:5433", "default port differs from approved port"),
+            (Provider.PostgreSql, "Host=localhost,127.0.0.1;Port=5433;" + pa, "localhost:5433", "multiple hosts"),
+            (Provider.PostgreSql, "Host=/var/run/postgresql;Port=5433;" + pa, "localhost:5433", "Unix socket"),
+            (Provider.PostgreSql, "Host=localhost:5433;" + pa, "localhost:5433", "port inside Host"),
+            (Provider.PostgreSql, "Host=pg.example.com;Port=5432;" + pa, "pg.example.com:5432", "remote host"),
+            (Provider.PostgreSql, "Host=localhost;Port=5433;Load Balance Hosts=true;" + pa, "localhost:5433", "load balancing"),
+            (Provider.PostgreSql, "Host=localhost;Port=5433;Target Session Attributes=primary;" + pa, "localhost:5433", "target session attributes"),
+            (Provider.PostgreSql, "Host=localhost;Port=5433;" + pa, "localhost", "malformed expected value"),
+            (Provider.PostgreSql, "Host=127.0.0.1;Port=5433;" + pa, "localhost:5433", "equivalent-looking host not treated as equal"),
+        };
+        foreach (var (p, raw, expected, why) in refused)
+            Expect("U5", Locality(p, raw, expected) is null, $"{p}: {why} -> refused");
+        var leaked = new List<string>();
+        foreach (var (p, raw, expected, _) in refused)
+        {
+            try { EndpointLocality.Validate(p, raw, expected); }
+            catch (SafetyRefusalException ex) when (ex.Message.Contains("U5-SECRET") || ex.Message.Contains("nobody")) { leaked.Add(ex.Message); }
+            catch (SafetyRefusalException) { }
+        }
+        Expect("U5", leaked.Count == 0, "no refusal message contains a credential or user name");
+        Expect("U5", Throws(() => Endpoint.Resolve(Provider.SqlServer, new Dictionary<string, string?>
+            { [Endpoint.SqlServerVariable] = "Server=localhost,14333;" + sa }).ValidateLocality()), "Endpoint without the expected variable refused");
+        Expect("U5", !Throws(() => Endpoint.Resolve(Provider.PostgreSql, new Dictionary<string, string?>
+            { [Endpoint.PostgreSqlVariable] = "Host=localhost;Port=5433;" + pa, [Endpoint.PostgreSqlExpectedVariable] = "localhost:5433" }).ValidateLocality()),
+            "Endpoint with a matching expected variable accepted");
+
+        output.WriteLine("U6: L-10 lifecycle ownership (fake lifecycle — no database)");
+        Task<UpgradeMeasurement> Passing(UpgradeProgress progress, CancellationToken _)
+        {
+            progress.Stage = "fake measurement";
+            return Task.FromResult(Simulation.Upgrade(Provider.SqlServer, master));
+        }
+        async Task<(Report Report, FakeLifecycle Fake)> Cycle(FakeLifecycle fake, Func<UpgradeProgress, CancellationToken, Task<UpgradeMeasurement>>? measure = null)
+        {
+            var report = new Report(RunMode.Live);
+            await LiveRunner.RunMasterUpgradeCycleAsync(Provider.SqlServer, fake, measure ?? Passing, master, report, CancellationToken.None);
+            return (report, fake);
+        }
+        CheckResult L10(Report r) => r.Results.Single(x => x.Id == Checks.L10);
+
+        var (ok, okFake) = await Cycle(new FakeLifecycle());
+        Expect("U6", L10(ok).Classification == Classification.Pass && ok.ExitCode == ExitCodes.Success, "complete cycle -> PASS, exit 0");
+        Expect("U6", okFake.Calls.SequenceEqual(["exists", "create", "drop", "exists"]) && !okFake.Present, $"exists, create, drop, verify-absent ({string.Join(",", okFake.Calls)})");
+        Expect("U6", okFake.Names.All(n => n == Safety.SqlServerDatabase), "only the approved name is ever used");
+
+        var (existing, existingFake) = await Cycle(new FakeLifecycle { Present = true });
+        Expect("U6", existing.SafetyRefusals.Count == 1 && existing.ExitCode == ExitCodes.SafetyRefusal && L10(existing).Detail.Contains("already exists"),
+            "pre-existing database -> SAFETY REFUSAL, exit 4");
+        Expect("U6", !existingFake.Calls.Contains("create") && !existingFake.Calls.Contains("drop") && existingFake.Present, "pre-existing database neither created over nor dropped");
+
+        var (createFailed, createFailedFake) = await Cycle(new FakeLifecycle { FailCreate = true });
+        Expect("U6", L10(createFailed).Classification == Classification.FailDefect && L10(createFailed).Detail.Contains("stage 'create database'")
+                     && createFailed.CleanupFailures.Count == 0 && createFailed.ExitCode == ExitCodes.Failure, "failed CREATE leaving nothing -> FAIL, exit 1");
+        Expect("U6", !createFailedFake.Calls.Contains("drop"), "nothing dropped after a failed CREATE");
+
+        var (ambiguous, ambiguousFake) = await Cycle(new FakeLifecycle { FailCreate = true, CreateLeavesDatabase = true });
+        Expect("U6", ambiguous.CleanupFailures.Count == 1 && ambiguous.CleanupFailures[0].Contains("UNVERIFIED") && ambiguous.ExitCode == ExitCodes.CleanupFailure,
+            "failed CREATE that left a database -> ownership UNVERIFIED, exit 5 (hard stop)");
+        Expect("U6", !ambiguousFake.Calls.Contains("drop") && ambiguousFake.Present, "a database of unverified ownership is never dropped");
+
+        var (interrupted, interruptedFake) = await Cycle(new FakeLifecycle(), (progress, _) =>
+        {
+            progress.Stage = "migrate down to 20261007022731_InitialMasterBaseline";
+            throw new InvalidOperationException("synthetic interruption");
+        });
+        Expect("U6", L10(interrupted).Classification == Classification.FailDefect && L10(interrupted).Detail.Contains("stage 'migrate down to")
+                     && interrupted.ExitCode == ExitCodes.Failure, "failure mid-cycle -> FAIL naming the stage, exit 1");
+        Expect("U6", interruptedFake.Calls.Count(c => c == "drop") == 1 && !interruptedFake.Present, "database created by this run still dropped and verified absent");
+
+        var (infra, _) = await Cycle(new FakeLifecycle(), (_, _) => throw new TimeoutException("synthetic"));
+        Expect("U6", L10(infra).Classification == Classification.FailInfrastructure, "environmental failure mid-cycle -> FAIL — INFRASTRUCTURE");
+
+        var (defect, defectFake) = await Cycle(new FakeLifecycle(), (_, _) =>
+        {
+            var m = Simulation.Upgrade(Provider.SqlServer, master);
+            return Task.FromResult(m with { AfterDown = m.AfterDown with { Fingerprints = Tamper("Tenants") } });
+        });
+        Expect("U6", L10(defect).Classification == Classification.FailDefect && L10(defect).Detail.Contains("after-down: Tenants fingerprint")
+                     && defectFake.Calls.Contains("drop"), "measured defect -> FAIL — DEFECT; database still dropped");
+
+        var (dropFailed, dropFailedFake) = await Cycle(new FakeLifecycle { FailDrop = true });
+        Expect("U6", dropFailed.CleanupFailures.Count == 1 && dropFailed.ExitCode == ExitCodes.CleanupFailure
+                     && L10(dropFailed).Classification == Classification.FailInfrastructure && L10(dropFailed).Detail.Contains("could not be removed"),
+            "failed DROP -> cleanup failure, exit 5; a PASS is downgraded, never reported");
+        Expect("U6", dropFailedFake.Present, "failed DROP leaves the state reported, not hidden");
+
+        var (lingering, _) = await Cycle(new FakeLifecycle { DropLeavesDatabase = true });
+        Expect("U6", lingering.CleanupFailures.Count == 1 && lingering.ExitCode == ExitCodes.CleanupFailure && L10(lingering).Classification != Classification.Pass,
+            "DROP that does not remove the database -> cleanup failure, exit 5, no PASS");
+
+        var (unknown, unknownFake) = await Cycle(new FakeLifecycle { FailExists = true });
+        Expect("U6", L10(unknown).Classification != Classification.Pass && !unknownFake.Calls.Contains("create"), "existence cannot be established -> not run, nothing created");
+
+        var cancelledFake = new FakeLifecycle();
+        var cancelledReport = new Report(RunMode.Live);
+        var cancelledThrown = false;
+        try
+        {
+            await LiveRunner.RunMasterUpgradeCycleAsync(Provider.SqlServer, cancelledFake,
+                (_, _) => throw new OperationCanceledException("synthetic cancel"), master, cancelledReport, CancellationToken.None);
+        }
+        catch (OperationCanceledException) { cancelledThrown = true; }
+        Expect("U6", cancelledThrown && cancelledFake.Calls.Contains("drop") && !cancelledFake.Present && cancelledReport.Results.Count == 0,
+            "operator cancellation -> propagated; owned database still dropped; no L-10 result claimed");
+
+        output.WriteLine("U8: F1 — interrupted CREATE: ownership checked on a bounded token, never dropped, never assumed");
+        async Task<(Report Report, FakeLifecycle Fake, bool Cancelled)> Interrupted(FakeLifecycle fake)
+        {
+            var report = new Report(RunMode.Live);
+            var cancelled = false;
+            try { await LiveRunner.RunMasterUpgradeCycleAsync(Provider.SqlServer, fake, Passing, master, report, CancellationToken.None); }
+            catch (OperationCanceledException) { cancelled = true; }
+            return (report, fake, cancelled);
+        }
+
+        var (cAbsent, cAbsentFake, cAbsentThrown) = await Interrupted(new FakeLifecycle { CancelCreate = true });
+        Expect("U8", cAbsentThrown && cAbsent.CleanupFailures.Count == 0 && cAbsent.Results.Count == 0
+                     && cAbsent.Evidence.Any(x => x.Contains("was cancelled") && x.Contains("confirmed absent")),
+            "cancelled CREATE, database absent -> cancellation propagates; recorded absent; no cleanup failure; no L-10 result claimed");
+        Expect("U8", !cAbsentFake.Calls.Contains("drop") && !cAbsent.Evidence.Any(x => x.Contains("owned by this run")), "nothing dropped; nothing described as owned");
+
+        var (cPresent, cPresentFake, cPresentThrown) = await Interrupted(new FakeLifecycle { CancelCreate = true, CreateLeavesDatabase = true });
+        Expect("U8", cPresentThrown && cPresent.CleanupFailures.Count == 1 && cPresent.CleanupFailures[0].Contains("was cancelled")
+                     && cPresent.CleanupFailures[0].Contains("UNVERIFIED") && cPresent.ExitCode == ExitCodes.CleanupFailure,
+            "cancelled CREATE, database exists -> ownership UNVERIFIED, exit 5");
+        Expect("U8", !cPresentFake.Calls.Contains("drop") && cPresentFake.Present, "the database of unverified ownership is NOT dropped");
+
+        var (cUnknown, cUnknownFake, cUnknownThrown) = await Interrupted(new FakeLifecycle { CancelCreate = true, FailExistsAfterCreate = true });
+        Expect("U8", cUnknownThrown && cUnknown.CleanupFailures.Count == 1 && cUnknown.CleanupFailures[0].Contains("could not be determined")
+                     && cUnknown.ExitCode == ExitCodes.CleanupFailure && !cUnknownFake.Calls.Contains("drop"),
+            "cancelled CREATE, existence check fails -> inconclusive = UNVERIFIED, exit 5, no DROP");
+
+        var (fUnknown, fUnknownFake, _) = await Interrupted(new FakeLifecycle { FailCreate = true, FailExistsAfterCreate = true });
+        Expect("U8", fUnknown.CleanupFailures.Count == 1 && fUnknown.CleanupFailures[0].Contains("failed (") && fUnknown.ExitCode == ExitCodes.CleanupFailure
+                     && L10(fUnknown).Classification == Classification.FailDefect && !fUnknownFake.Calls.Contains("drop"),
+            "failed CREATE, existence check fails -> L-10 FAIL plus UNVERIFIED cleanup, exit 5, no DROP");
+
+        var savedTimeout = LiveRunner.OwnershipCheckTimeout;
+        try
+        {
+            LiveRunner.OwnershipCheckTimeout = TimeSpan.FromMilliseconds(50);
+            var (hung, hungFake, hungThrown) = await Interrupted(new FakeLifecycle { CancelCreate = true, HangExistsAfterCreate = true });
+            Expect("U8", hungThrown && hung.CleanupFailures.Count == 1 && hung.CleanupFailures[0].Contains("could not be determined")
+                         && hung.ExitCode == ExitCodes.CleanupFailure && !hungFake.Calls.Contains("drop"),
+                "existence check exceeding its bound -> inconclusive = UNVERIFIED, exit 5, no DROP");
+        }
+        finally { LiveRunner.OwnershipCheckTimeout = savedTimeout; }
+
+        var tokenFake = new FakeLifecycle { CancelCreate = true };
+        using (var runCancel = new CancellationTokenSource())
+        {
+            runCancel.Cancel();
+            var report = new Report(RunMode.Live);
+            try { await LiveRunner.RunMasterUpgradeCycleAsync(Provider.SqlServer, tokenFake, Passing, master, report, runCancel.Token); }
+            catch (OperationCanceledException) { }
+            Expect("U8", tokenFake.TokensAfterCreate.Count > 0 && tokenFake.TokensAfterCreate.All(t => !t.IsCancellationRequested && t.CanBeCanceled),
+                "post-interruption check uses its own bounded token, unaffected by the run's cancellation");
+        }
+
+        Expect("U8", cancelledFake.Calls.SequenceEqual(["exists", "create", "drop", "exists"]),
+            "cancellation AFTER a confirmed CREATE -> the owned database is dropped and verified absent (U6 cancellation path)");
+
+        Expect("U8", L10(createFailed).Classification == Classification.FailDefect && createFailed.CleanupFailures.Count == 0
+                     && createFailed.Evidence.Any(x => x.Contains("failed (") && x.Contains("confirmed absent")),
+            "failed CREATE, database absent -> FAIL (exit 1), recorded absent, not an owned leftover");
+
+        output.WriteLine("U9: F2 — exact persisted fixture rows per table at the Phase 1 head");
+        Expect("U9", Evaluator.UpgradeFixtureCounts.Keys.Order(StringComparer.Ordinal).SequenceEqual(u.FixtureTables.Order(StringComparer.Ordinal))
+                     && Evaluator.UpgradeFixtureCounts.Values.Sum() == u.FixtureRows,
+            "pinned counts cover exactly the fixture tables and sum to the fixture row total (2/2/3/2/2 = 11)");
+        Expect("U9", Evaluator.Upgrade(Provider.SqlServer, k, Simulation.Upgrade(Provider.SqlServer, master), master).Classification == Classification.Pass,
+            "exact counts -> PASS");
+        Dictionary<string, long> Counts(string table, long value) =>
+            Evaluator.UpgradeFixtureCounts.ToDictionary(kv => kv.Key, kv => kv.Key == table ? value : kv.Value);
+        var countFaults = new (string Name, IReadOnlyDictionary<string, long> Counts, string Marker)[]
+        {
+            ("missing Users row", Counts("Users", 1), "before: Users has 1 persisted row(s), expected 2"),
+            ("extra UserTenants row", Counts("UserTenants", 4), "before: UserTenants has 4 persisted row(s), expected 3"),
+            ("empty Tenants", Counts("Tenants", 0), "before: Tenants has 0 persisted row(s), expected 2"),
+            ("Roles not counted", Evaluator.UpgradeFixtureCounts.Where(kv => kv.Key != "Roles").ToDictionary(), "before: Roles persisted row count not measured"),
+        };
+        foreach (var (name, counts, marker) in countFaults)
+        {
+            var r = Evaluator.Upgrade(Provider.SqlServer, k, Simulation.Upgrade(Provider.SqlServer, master) with { BeforeRowCounts = counts }, master);
+            Expect("U9", r.Classification == Classification.FailDefect && r.Detail.Contains(marker, StringComparison.Ordinal), $"{name} -> FAIL naming the table");
+        }
+
+        output.WriteLine("U7: canonical fingerprint values are provider-neutral");
+        var t = new DateTime(2026, 10, 1, 9, 0, 0, DateTimeKind.Utc).AddTicks(1_234_567);
+        Expect("U7", LiveRunner.Canonical(t) == LiveRunner.Canonical(t.AddTicks(-7)) && LiveRunner.Canonical(t) == LiveRunner.Canonical(new DateTimeOffset(t)),
+            "100 ns vs 1 µs precision and DateTime vs DateTimeOffset do not register");
+        Expect("U7", LiveRunner.Canonical(true) == "b:1" && LiveRunner.Canonical(null) == LiveRunner.Canonical(DBNull.Value)
+                     && LiveRunner.Canonical(5) == LiveRunner.Canonical(5L) && LiveRunner.Canonical(Guid.Empty) == "g:00000000-0000-0000-0000-000000000000",
+            "bool, NULL, integer width and GUID forms are normalized");
+        Expect("U7", LiveRunner.Canonical("ab") != LiveRunner.Canonical("a") + LiveRunner.Canonical("b") && LiveRunner.Canonical(t) != LiveRunner.Canonical(t.AddTicks(10)),
+            "strings are length-prefixed; a whole-microsecond change still registers");
+
+        return failures;
+    }
+
+    /// <summary>
+    /// Test-only lifecycle: an in-memory "does the database exist" flag and a call log. It can
+    /// fail any step. It never touches a server.
+    /// </summary>
+    private sealed class FakeLifecycle : IDatabaseLifecycle
+    {
+        public bool Present { get; set; }
+        public bool FailCreate { get; init; }
+        public bool CreateLeavesDatabase { get; init; }
+        public bool FailDrop { get; init; }
+        public bool DropLeavesDatabase { get; init; }
+        public bool FailExists { get; init; }
+        public bool CancelCreate { get; init; }
+        public bool FailExistsAfterCreate { get; init; }
+        public bool HangExistsAfterCreate { get; init; }
+        public List<string> Calls { get; } = [];
+        public List<string> Names { get; } = [];
+        public List<CancellationToken> TokensAfterCreate { get; } = [];
+        private bool _createAttempted;
+
+        public async Task<bool> ExistsAsync(string database, CancellationToken ct)
+        {
+            Calls.Add("exists");
+            Names.Add(database);
+            if (_createAttempted) TokensAfterCreate.Add(ct);
+            if (FailExists || (_createAttempted && FailExistsAfterCreate))
+                throw new InvalidOperationException("synthetic existence failure");
+            if (_createAttempted && HangExistsAfterCreate)
+                await Task.Delay(Timeout.Infinite, ct); // only the bounded token can end this
+            return Present;
+        }
+
+        public Task CreateAsync(string database, CancellationToken ct)
+        {
+            Calls.Add("create");
+            Names.Add(database);
+            _createAttempted = true;
+            if (CancelCreate)
+            {
+                Present = CreateLeavesDatabase;
+                return Task.FromException(new OperationCanceledException("synthetic cancellation during CREATE"));
+            }
+            if (FailCreate)
+            {
+                Present = CreateLeavesDatabase;
+                return Task.FromException(new InvalidOperationException("synthetic CREATE failure"));
+            }
+
+            Present = true;
+            return Task.CompletedTask;
+        }
+
+        public Task DropAsync(string database, CancellationToken ct)
+        {
+            Calls.Add("drop");
+            Names.Add(database);
+            if (FailDrop) return Task.FromException(new InvalidOperationException("synthetic DROP failure"));
+            Present = DropLeavesDatabase;
+            return Task.CompletedTask;
+        }
     }
 
     /// <summary>Test-only: lets SaveChanges run its interceptors, then skips the database entirely.</summary>

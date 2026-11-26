@@ -104,6 +104,31 @@ All tables inheriting `AuditableEntity` include these columns:
 
 ---
 
+### `Companies`
+
+**Purpose:** The organisational grouping above Tenant (approved model: Company 1:N Tenant).
+Master DB only — a Company has no business database of its own. Added by migration
+`AddCompanyFoundation` (P2-a, `ARCH-IMPL-01`).
+
+| Column | Type | Constraint | Purpose |
+|--------|------|------------|---------|
+| `Id` | `UNIQUEIDENTIFIER` | PK (`PK_Companies`), application-assigned | Company internal ID |
+| `Code` | `NVARCHAR(50)` | NOT NULL, UNIQUE (`IX_Companies_Code`) | Company code |
+| `Name` | `NVARCHAR(200)` | NOT NULL | Display name |
+| `IsActive` | `BIT` | NOT NULL (no database default) | Soft-disable flag — **stored only; nothing enforces it yet** |
+| `CreatedAt` | `DATETIME2` | NOT NULL | When the company was created (UTC) |
+
+**Notes:**
+- **No rows are created by the schema.** The migration adds the table empty; no default or
+  placeholder Company exists, and no application code writes Companies yet.
+- **`Code` contract:** the same canonical form as `Tenant.Code` — `Trim()` + `ToLowerInvariant()`,
+  enforced by the application. The unique index is plain (no filter, no collation), so on its own
+  it does **not** make codes case-insensitive. The application-level normalizer does not exist yet;
+  it arrives with the first approved slice that writes Companies.
+- Company membership does **not** grant Tenant access; Tenant access remains `UserTenants`.
+
+---
+
 ### `Tenants`
 
 **Purpose:** Registry of all tenant organizations. Each tenant gets its own business database.
@@ -117,6 +142,7 @@ All tables inheriting `AuditableEntity` include these columns:
 | `DbProvider` | `NVARCHAR(50)` | NOT NULL | "SqlServer" or "PostgreSql" |
 | `IsActive` | `BIT` | NOT NULL, DEFAULT 1 | Disabled tenants cannot log in |
 | `CreatedAt` | `DATETIME2` | NOT NULL | When tenant was provisioned |
+| `CompanyId` | `UNIQUEIDENTIFIER` | **NULL**, FK → Companies(Id) `ON DELETE RESTRICT` (`FK_Tenants_Companies_CompanyId`), indexed (`IX_Tenants_CompanyId`, non-unique) | Owning company. **NULL = no company association** — existing tenants keep NULL; nothing assigns them. Added by `AddCompanyFoundation` (P2-a, `ARCH-IMPL-02`) |
 
 **Notes:**
 - This is the first table queried on every request (cached 30 min by TenantMiddleware)
@@ -667,20 +693,41 @@ engines behave differently. PostgreSQL has its own migration lineages — one ba
 (P1-i `InitialMasterBaseline`, P1-j `InitialTenantBaseline`) — rather than a replay of SQL
 Server's history.
 
+**Master migration lineages (current):**
+
+| Provider | Lineage (ordered) |
+|---|---|
+| SQL Server | `20260407122318_InitialMaster` → `20260509162834_AddPasswordResetToken` → `20261012130942_AddCompanyFoundation` |
+| PostgreSQL | `20261007022731_InitialMasterBaseline` → `20261012131005_AddCompanyFoundation` |
+
+`AddCompanyFoundation` (P2-a) is the **first incremental PostgreSQL Master migration**. Both
+providers' versions contain the same operations — add nullable `Tenants.CompanyId`, create
+`Companies`, create `IX_Tenants_CompanyId` and unique `IX_Companies_Code`, add
+`FK_Tenants_Companies_CompanyId` (Restrict) — and no data operations; only store-type spellings
+differ. New Master migrations are generated into `Migrations/MasterDb/` for both providers. The
+SQL Server Master snapshot remains `Migrations/MasterDbContextModelSnapshot.cs` in the root
+`ERP.Persistence.SqlServer.Migrations` namespace, as it has been since `InitialMaster`; there is
+exactly one Master snapshot per provider assembly. The tenant (AppDb) lineages are unchanged.
+
 Verified offline by `ProviderParityTests` (59 tests) and live by `tools/ERP.ParityCheck` (P1-k:
 29 PASS, 4 EXPECTED DIFFERENCE, 0 FAIL, 0 SKIPPED, 1 DEFERRED; evidence run
-`phase2b2-20261010-160321`, retained outside the repository).
+`phase2b2-20261010-160321`, retained outside the repository). **The P1-k live run predates
+`AddCompanyFoundation`:** it verified the schema before Companies existed. The Company schema is
+verified offline (`ProviderParityTests`, `CompanyMasterFoundationTests`, and
+`dotnet ef migrations has-pending-model-changes` on both providers) and, **for PostgreSQL Master
+only**, live by the P2-a.2.3e `L-10` run (see *Unresolved debt* → `L-10`); it has not been
+applied to a live SQL Server database.
 
 ### Store-type mapping
 
 | SQL Server | PostgreSQL | Master columns | Tenant columns |
 |---|---|---|---|
-| `uniqueidentifier` | `uuid` | 42 | 32 |
-| `datetime2` | `timestamp with time zone` | 26 | 19 |
-| `bit` | `boolean` | 20 | 12 |
+| `uniqueidentifier` | `uuid` | 44 | 32 |
+| `datetime2` | `timestamp with time zone` | 27 | 19 |
+| `bit` | `boolean` | 21 | 12 |
 | `int` | `integer` | 3 | 5 |
 | `nvarchar(max)` | `text` | 3 | 3 |
-| `nvarchar(n)` | `character varying(n)` — same `n` | 46 | 24 |
+| `nvarchar(n)` | `character varying(n)` — same `n` | 48 | 24 |
 | `date` | `date` | 0 | 1 (`WorkOrders.DueDate`) |
 
 Table, column, key, index and foreign-key names are identical on both engines: quoted
@@ -705,6 +752,40 @@ PascalCase on PostgreSQL, no snake_case convention.
   either provider. The `DB-11` pre-deployment runbook in `TENANT_PROVISIONING.md` is the control.
 - **`L-10` — incremental-upgrade parity is DEFERRED**: no incremental PostgreSQL migration exists
   yet, so only from-empty baselines and Down/Up are verified. `DB-03` remains **PARTIALLY OPEN**.
+  *Update (P2-a):* the first incremental PostgreSQL **Master** migration now exists
+  (`AddCompanyFoundation`), but its live upgrade from the Phase 1 head with existing rows has
+  **not** been run, so Master `L-10` is still DEFERRED *(superseded for PostgreSQL by the
+  P2-a.2.3e update below)*. The tenant (AppDb) side still has no incremental PostgreSQL
+  migration; AppDb `L-10` remains DEFERRED independently.
+  *Update (P2-a.2.3e, owner-closed 2026-10-17):* **PostgreSQL Master `L-10` — VERIFIED, PASS.**
+  Scope: PostgreSQL provider, Master context only, backend `89874873c7a58b47b68d4da3629001754f4d9aff`
+  (branch `feat/p2a-company-master-foundation`, not merged). One owner-run live execution of
+  `tools/ERP.ParityCheck --live --provider postgresql --context master` against a dedicated parity
+  cluster, disposable database `ERP_P1k_Parity_PostgreSql_Throwaway`:
+  - **`L-10` lifecycle:** `20261007022731_InitialMasterBaseline` → `20261012131005_AddCompanyFoundation`
+    → down → re-up; 11 synthetic pre-existing rows unchanged at every stage; `Companies` empty,
+    `Tenants.CompanyId` NULL, `FK_Tenants_Companies_CompanyId` RESTRICT; invalid-FK, restrict-delete
+    and duplicate-code probes rejected and rolled back; database dropped, absence verified.
+  - **From-empty lifecycle:** full lineage applied, checks run, Down→0/Up; dropped, absence verified.
+  - **Results:** 8 PASS (`L-1`, `L-2`, `L-5`, `L-6`, `L-7`, `L-9`, `L-10`, `L-11`), 2 approved
+    EXPECTED DIFFERENCE (`L-3` timestamp precision, `L-8` `Tenant.Code` comparison), 25 SKIPPED by
+    selection (SQL Server; AppDb; cross-provider `L-9`), 1 DEFERRED (AppDb `L-10`), 0 FAIL, 0 safety
+    refusals, 0 cleanup failures. Harness exit 2 (expected for this scope); wrapper exit 0; read-only
+    guard checks before, immediately after and ≥ 60 s after the run all PASS (throwaway database absent).
+  - **Evidence** (retained outside the repository): run `20261017-153028-LiveMasterL10` —
+    `parity-report.json` SHA-256 `2b3bd4bf76f1d70487939c47366d992d42d42dcbcd0ed5a6348605a886f5821f`,
+    `wrapper.log` `347641a928043fd7348afdf6bf206971becce4c36e964e39ddeccc846775627c`,
+    `parity-console.txt` `53068fb90c9d90a5a2fc71ee19e6ed869e79a8ef1c57ed07a8c798b2a2fb6efc`;
+    harness `ERP.ParityCheck.dll` `4c48c4a3495cc70814558b35dc43ff0313a104a15cfa5045346e859e0c9679a7`;
+    closure record `P2-a.2.3e-PG-L10-CLOSURE-20261017.md`
+    `c2e312d20b27e342ac6a8e4abd7d78a1423a4a2326392fe1dadae221b56b512c`.
+  - **Operational note:** the operator console paused in Windows QuickEdit *Select* mode between the
+    post-run checks; it was resumed with Esc in the same process — the harness was **not** rerun.
+  - **Still open:** SQL Server Master `L-10`; cross-provider `L-9` for the new Master lineage; AppDb
+    `L-10` (DEFERRED). `DB-03` remains **PARTIALLY OPEN**; `F3` (`XACT_ABORT`, SQL Server), `F4`
+    (endpoint aliasing), `DB-09`, `DB-11` and the accepted security/repeatability risks carry forward.
+    This is **not** an approval of Phase 2 completion, Company/Tenant production use or production
+    readiness.
 
 ### `L-9` incident — IdentitySeeder in the live parity harness (P1-k)
 
@@ -832,6 +913,9 @@ from tracking and history — requires a separately approved security slice.
 ### Master DB Relationships
 
 ```
+Companies ◄── Tenants.CompanyId (nullable, Restrict)
+   (no membership table yet — Company never implies Tenant access)
+
 Tenants ◄────────────── UserTenants ──────────────► Users
    │                                                  │
    │         ┌── TenantFeatureFlags                   │

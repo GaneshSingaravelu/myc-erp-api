@@ -12,6 +12,27 @@ namespace ERP.Identity.Configuration;
 // Discovered by MasterDbContext via assembly scanning.
 // ============================================================================
 
+// ── Company ─────────────────────────────────────────────────────────────────
+
+public class CompanyConfiguration : IEntityTypeConfiguration<Company>
+{
+    public void Configure(EntityTypeBuilder<Company> builder)
+    {
+        builder.ToTable("Companies");
+
+        builder.HasKey(c => c.Id);
+        builder.Property(c => c.Id).ValueGeneratedNever();
+
+        builder.Property(c => c.Code).HasMaxLength(50).IsRequired();
+        builder.Property(c => c.Name).HasMaxLength(200).IsRequired();
+        builder.Property(c => c.CreatedAt).IsRequired();
+
+        // Uniqueness of the canonical code. Canonical form itself is the application's job
+        // (same contract as Tenant.Code) — this index does not make lookups case-insensitive.
+        builder.HasIndex(c => c.Code).IsUnique();
+    }
+}
+
 // ── Tenant ──────────────────────────────────────────────────────────────────
 
 public class TenantConfiguration : IEntityTypeConfiguration<Tenant>
@@ -30,6 +51,15 @@ public class TenantConfiguration : IEntityTypeConfiguration<Tenant>
         builder.Property(t => t.CreatedAt).IsRequired();
 
         builder.HasIndex(t => t.Code).IsUnique();
+
+        // Optional for now: existing tenants have no company and none is invented for them.
+        // Restrict, not Cascade — companies are soft-disabled (ARCH-12), never deleted out
+        // from under their tenants.
+        builder.HasOne(t => t.Company)
+            .WithMany(c => c.Tenants)
+            .HasForeignKey(t => t.CompanyId)
+            .IsRequired(false)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }
 

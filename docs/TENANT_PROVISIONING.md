@@ -352,7 +352,8 @@ dotnet ef database update \
 > The `--startup-project src/Host/ERP.Api … --connection` form above was **not** the form verified
 > in P1-i–P1-k. Both baselines were applied from empty and rolled Down/Up on real PostgreSQL 17.9
 > by the P1-k parity harness (`tools/ERP.ParityCheck`). Incremental-upgrade parity (`L-10`) is
-> **not** yet verified: no incremental PostgreSQL migration exists.
+> verified only for the PostgreSQL **Master** lineage (`AddCompanyFoundation`, P2-a.2.3e); tenant
+> (AppDb) `L-10` is **not** verified: no incremental PostgreSQL tenant migration exists.
 
 ### Step 3: Register Tenant in Master DB
 

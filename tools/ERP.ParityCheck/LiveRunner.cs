@@ -30,7 +30,7 @@ public sealed record RunOptions(bool Live, IReadOnlySet<Provider> Providers, IRe
 /// create it, migrate it from empty, measure, classify, and ALWAYS drop it again — but only a
 /// database this run created. Every live check is reported; nothing is silently omitted.
 /// </summary>
-public static class LiveRunner
+public static partial class LiveRunner
 {
     private static readonly Provider[] AllProviders = [Provider.SqlServer, Provider.PostgreSql];
     private static readonly DbContextKind[] AllContexts = [DbContextKind.Master, DbContextKind.AppDb];
@@ -62,6 +62,9 @@ public static class LiveRunner
             try
             {
                 endpoint.Validate();
+                // P2-a.2: fail-closed locality guard — pure parsing, before ANY connection.
+                var approved = endpoint.ValidateLocality();
+                report.Evidence.Add($"{provider}: endpoint matches the approved loopback endpoint '{approved}' (form only; server ownership NOT proven by this check)");
             }
             catch (SafetyRefusalException refusal)
             {
@@ -95,13 +98,20 @@ public static class LiveRunner
 
                 try
                 {
+                    // L-10 (Master) runs in its OWN create -> verify -> drop cycle, before the
+                    // from-empty cycle, so its synthetic rows can never reach L-1/L-2/L-9 measurements.
+                    // It always reports exactly one L-10 result and never throws (except cancellation).
+                    if (kind == DbContextKind.Master)
+                        await RunMasterUpgradeAsync(provider, endpoint, expectations.Master, report, ct);
+
                     var seed = await RunContextAsync(provider, kind, endpoint, expectations.For(kind), report, ct);
                     if (kind == DbContextKind.Master) seeds[provider] = seed;
                 }
                 catch (SafetyRefusalException refusal)
                 {
                     report.SafetyRefusals.Add(refusal.Message);
-                    MarkAll(report, provider, [kind], (id, k) => Evaluator.Failed(id, provider, k, "not run: safety refusal"));
+                    // Remaining, not All: a Master L-10 result already reported must not be duplicated.
+                    MarkRemaining(report, provider, kind, "not run: safety refusal", infrastructure: false);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -113,7 +123,7 @@ public static class LiveRunner
         }
 
         report.Add(Evaluator.SeedEquivalence(seeds.GetValueOrDefault(Provider.SqlServer), seeds.GetValueOrDefault(Provider.PostgreSql)));
-        report.Add(Evaluator.Deferred());
+        report.Add(Evaluator.DeferredAppDb());
     }
 
     private static void MarkAll(Report report, Provider p, IEnumerable<DbContextKind> kinds, Func<string, DbContextKind, CheckResult> make)
@@ -170,7 +180,18 @@ public static class LiveRunner
         SeedMeasurement? seed = null;
         try
         {
-            await ExecuteAsync(p, admin, p == Provider.SqlServer ? $"CREATE DATABASE [{database}]" : $"CREATE DATABASE \"{database}\"", ct);
+            try
+            {
+                await ExecuteAsync(p, admin, p == Provider.SqlServer ? $"CREATE DATABASE [{database}]" : $"CREATE DATABASE \"{database}\"", ct);
+            }
+            catch (Exception interruption)
+            {
+                // F1 (P2-a.2.1b): a failed or cancelled CREATE may still have completed on the server.
+                // Record the ownership outcome (never drops anything), then rethrow unchanged.
+                await RecordOwnershipAfterInterruptedCreateAsync(
+                    p, database, token => DatabaseExistsAsync(p, admin, database, token), report, kind.ToString(), interruption);
+                throw;
+            }
             created = true;
             report.Evidence.Add($"{p}/{kind}: created disposable database '{database}'");
 

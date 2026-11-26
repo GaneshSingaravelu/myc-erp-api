@@ -32,7 +32,8 @@ public sealed record CheckResult(string Id, string Title, string Scope, Classifi
 /// <summary>
 /// EXIT CODES — explicit, and independent of console text so they can be asserted.
 ///
-///   0  Success     — every check in the full matrix ran; none failed, none skipped.
+///   0  Success     — every check in the full matrix ran; none failed, none skipped. That
+///                     includes Master L-10 (incremental upgrade) PASS for each provider. AppDb
 ///                     L-10 is always DEFERRED, so DB-03 is still reported PARTIALLY OPEN.
 ///   1  Failure     — at least one check is FAIL — DEFECT (a parity assertion failed) or
 ///                     FAIL — INFRASTRUCTURE (e.g. a configured endpoint could not be reached).
@@ -85,7 +86,7 @@ public sealed class Report
 
     /// <summary>
     /// The one-line verdict. Only a LIVE run with zero failures and zero skips may say the
-    /// selected live checks were verified — and even then DB-03 stays PARTIALLY OPEN (L-10).
+    /// selected live checks were verified — and even then DB-03 stays PARTIALLY OPEN (AppDb L-10).
     /// </summary>
     public string Verdict
     {
@@ -102,11 +103,18 @@ public sealed class Report
                     $"live parity NOT verified.{coverage} DB-03 PARTIALLY OPEN.",
                 ExitCodes.Incomplete => prefix + $"INCOMPLETE — {Count(Classification.SkippedNoEndpoint)} check(s) skipped; live parity NOT verified.{coverage} DB-03 PARTIALLY OPEN.",
                 _ => Mode == RunMode.Simulation
-                    ? prefix + "Simulated matrix classified without failures or skips. No live parity claim. L-10 DEFERRED. DB-03 PARTIALLY OPEN."
-                    : "Full live matrix executed: no failures, no skips. L-10 DEFERRED (upgrade path not yet testable). DB-03 PARTIALLY OPEN.",
+                    ? prefix + "Simulated matrix classified without failures or skips. No live parity claim; Master L-10 simulated only. AppDb L-10 DEFERRED. DB-03 PARTIALLY OPEN."
+                    : $"Full live matrix executed: no failures, no skips. Master L-10 verified live on [{MasterUpgradeVerified()}]. " +
+                      "AppDb L-10 DEFERRED (no incremental AppDb migration). DB-03 PARTIALLY OPEN.",
             };
         }
     }
+
+    /// <summary>Providers whose Master L-10 is an actual PASS — never inferred from a skip or a deferral.</summary>
+    private string MasterUpgradeVerified() => string.Join(", ", Results
+        .Where(r => r.Id == "L-10" && r.Classification == Classification.Pass && r.Scope.EndsWith("/Master", StringComparison.Ordinal))
+        .Select(r => r.Scope.Split('/')[0])
+        .Order(StringComparer.Ordinal));
 
     private string CoverageNote()
     {
