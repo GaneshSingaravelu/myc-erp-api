@@ -172,9 +172,9 @@ public class AuthService_ChangePasswordTests : AuthServiceTestBase
         });
 
         // All 3 JTI cache entries must be invalidated
-        CacheMock.Verify(c => c.Remove("jti_valid:jti-1"), Times.Once);
-        CacheMock.Verify(c => c.Remove("jti_valid:jti-2"), Times.Once);
-        CacheMock.Verify(c => c.Remove("jti_valid:jti-3"), Times.Once);
+        Assert.False(await IsJtiActiveAsync("jti-1")); // R2-DEV-03A: no JTI cache; the session check rejects it
+        Assert.False(await IsJtiActiveAsync("jti-2")); // R2-DEV-03A: no JTI cache; the session check rejects it
+        Assert.False(await IsJtiActiveAsync("jti-3")); // R2-DEV-03A: no JTI cache; the session check rejects it
     }
 
     [Fact]
@@ -188,6 +188,6 @@ public class AuthService_ChangePasswordTests : AuthServiceTestBase
         var result = await Sut.ChangePasswordAsync(user.Id, "Current@123", "BrandNew@456");
 
         Assert.True(result.IsSuccess);
-        CacheMock.Verify(c => c.Remove(It.IsAny<string>()), Times.Never);
+        Assert.Empty(await Context.Set<UserSession>().AsNoTracking().ToListAsync());
     }
 }

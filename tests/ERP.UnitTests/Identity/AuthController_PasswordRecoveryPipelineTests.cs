@@ -102,6 +102,12 @@ public class AuthController_PasswordRecoveryPipelineTests : IDisposable
             SecretKey = "test-secret-key-32-chars-minimum!!", Issuer = "i", Audience = "a",
             AccessTokenExpirationMinutes = 60, RefreshTokenExpirationDays = 7
         }));
+        // R2-DEV-03A: refresh-token digest key (random per run; never a committed value).
+        services.AddSingleton(Microsoft.Extensions.Options.Options.Create(new RefreshTokenSettings
+        {
+            HmacKey = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(48)),
+        }));
+        services.AddSingleton<IRefreshTokenHasher, RefreshTokenHasher>();
         services.AddScoped<IAuthService, AuthService>();
 
         _root = services.BuildServiceProvider();

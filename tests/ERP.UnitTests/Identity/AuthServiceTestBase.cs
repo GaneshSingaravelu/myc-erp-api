@@ -29,8 +29,10 @@ namespace ERP.UnitTests.Identity;
 public abstract class AuthServiceTestBase : IDisposable
 {
     protected readonly MasterDbContext Context;
+
+    /// <summary>Name of this test's InMemory store — lets a test open a second, independent context on it.</summary>
+    protected readonly string InMemoryDatabaseName;
     protected readonly Mock<ITokenService> TokenServiceMock;
-    protected readonly Mock<IMemoryCache> CacheMock;
     protected Mock<IEmailService> EmailServiceMock = null!;
     protected readonly AuthService Sut; // System Under Test
 
@@ -42,6 +44,19 @@ public abstract class AuthServiceTestBase : IDisposable
         AccessTokenExpirationMinutes = 60,
         RefreshTokenExpirationDays = 7
     };
+
+    /// <summary>
+    /// R2-DEV-03A: refresh-token digest settings for tests. The HMAC key is random per test
+    /// run — no key value is committed to source control.
+    /// </summary>
+    protected static readonly RefreshTokenSettings TestRefreshTokenSettings = new()
+    {
+        HmacKey = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(48)),
+        DuplicateWindowSeconds = 10,
+    };
+
+    protected static readonly IRefreshTokenHasher TestRefreshTokenHasher =
+        new RefreshTokenHasher(Options.Create(TestRefreshTokenSettings));
 
     /// <summary>
     /// One-time, thread-safe registration of Identity entity configurations.
@@ -69,15 +84,15 @@ public abstract class AuthServiceTestBase : IDisposable
         currentUser.SetupGet(c => c.TenantId).Returns((string?)null);
 
         // Each test gets its own InMemory DB (unique name prevents cross-test leakage)
+        InMemoryDatabaseName = Guid.NewGuid().ToString();
         var options = new DbContextOptionsBuilder<MasterDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .UseInMemoryDatabase(InMemoryDatabaseName)
             .AddInterceptors(new AuditableEntityInterceptor(currentUser.Object))
             .Options;
 
         Context = new MasterDbContext(options);
 
         TokenServiceMock = new Mock<ITokenService>();
-        CacheMock = new Mock<IMemoryCache>();
 
         // Default mock behavior — overridden in specific tests when needed
         TokenServiceMock.Setup(t => t.GenerateRefreshToken())
@@ -108,11 +123,21 @@ public abstract class AuthServiceTestBase : IDisposable
             tenants,
             unitOfWork,
             TokenServiceMock.Object,
-            CacheMock.Object,
+            TestRefreshTokenHasher,
             emailServiceMock.Object,
             Options.Create(TestJwtSettings),
+            Options.Create(TestRefreshTokenSettings),
             NullLogger<AuthService>.Instance);
     }
+
+    /// <summary>
+    /// R2-DEV-03A replacement for the former JTI-cache assertions: true while the access token
+    /// with this JTI would still be accepted (its session is live). There is no cache any more;
+    /// this is the same database condition OnTokenValidated checks on every request.
+    /// </summary>
+    protected Task<bool> IsJtiActiveAsync(string jti) =>
+        Context.Set<UserSession>().AsNoTracking()
+            .AnyAsync(s => s.AccessTokenJti == jti && !s.IsRevoked && s.ExpiresAt > DateTime.UtcNow);
 
     // ── Helper: Create a standard test user ──
 
@@ -206,7 +231,9 @@ public abstract class AuthServiceTestBase : IDisposable
         {
             UserId = userId,
             TenantId = tenantId,
-            RefreshToken = refreshToken,
+            // Stored exactly as production stores it: the keyed digest. Tests keep passing the
+            // plaintext token to RefreshTokenAsync/LogoutAsync.
+            RefreshTokenHash = TestRefreshTokenHasher.Hash(refreshToken),
             RefreshTokenExpiry = refreshTokenExpiry ?? DateTime.UtcNow.AddDays(7),
             AccessTokenJti = jti,
             ExpiresAt = expiresAt ?? DateTime.UtcNow.AddDays(7),

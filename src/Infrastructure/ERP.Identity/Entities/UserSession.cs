@@ -20,7 +20,15 @@ namespace ERP.Identity.Entities;
 /// 2. Server finds session by refresh token
 /// 3. Validates: not revoked, not expired, user active
 /// 4. Issues new access token + new refresh token (rotation)
-/// 5. Updates LastAccessedAt, replaces RefreshToken + AccessTokenJti
+/// 5. Updates LastAccessedAt, replaces RefreshTokenHash + AccessTokenJti
+///
+/// R2-DEV-03A — VERSIONED DEVICE SESSIONS:
+/// - The session Id is the device session FAMILY: every rotation keeps the same row.
+/// - Only an HMAC-SHA-256 digest of the current refresh token is stored (never plaintext).
+/// - <see cref="RotationVersion"/> is an EF concurrency token and is incremented by EVERY state
+///   change (rotation and revocation). Each write is therefore
+///   <c>UPDATE … WHERE Id = @id AND RotationVersion = @original</c>: a stale writer affects no
+///   row and fails, so it can neither overwrite a newer rotation nor un-revoke a session.
 /// </summary>
 public class UserSession : BaseEntity
 {
@@ -31,8 +39,14 @@ public class UserSession : BaseEntity
     public Guid TenantId { get; set; }
     public Tenant Tenant { get; set; } = null!;
 
-    /// <summary>Cryptographic refresh token (generated via RandomNumberGenerator)</summary>
-    public string RefreshToken { get; set; } = string.Empty;
+    /// <summary>HMAC-SHA-256 hex digest of the current refresh token (unique). Plaintext is never stored.</summary>
+    public string RefreshTokenHash { get; set; } = string.Empty;
+
+    /// <summary>Optimistic-concurrency version; +1 on every rotation and revocation.</summary>
+    public int RotationVersion { get; set; }
+
+    /// <summary>Tokens consumed by earlier rotations of this session (reuse detection).</summary>
+    public ICollection<ConsumedRefreshToken> ConsumedTokens { get; set; } = [];
 
     /// <summary>When the refresh token expires</summary>
     public DateTime RefreshTokenExpiry { get; set; }

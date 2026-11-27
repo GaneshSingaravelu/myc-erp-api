@@ -636,7 +636,7 @@ public class UtcDateTimeMasterRelationalTests : IDisposable
         var session = new UserSession
         {
             UserId = _userId, TenantId = _tenantId,
-            RefreshToken = "rt", AccessTokenJti = "jti",
+            RefreshTokenHash = "rt", AccessTokenJti = "jti",
             RefreshTokenExpiry = utcNow.AddDays(7), ExpiresAt = utcNow.AddDays(7), CreatedAt = utcNow,
         };
         _context.Set<UserSession>().Add(session);

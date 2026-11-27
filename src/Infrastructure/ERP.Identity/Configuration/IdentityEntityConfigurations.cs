@@ -102,7 +102,11 @@ public class UserSessionConfiguration : IEntityTypeConfiguration<UserSession>
         builder.HasKey(s => s.Id);
         builder.Property(s => s.Id).ValueGeneratedNever();
 
-        builder.Property(s => s.RefreshToken).HasMaxLength(500).IsRequired();
+        // R2-DEV-03A: keyed digest only (64 hex chars); plaintext refresh tokens are never stored.
+        builder.Property(s => s.RefreshTokenHash).HasMaxLength(64).IsRequired();
+        // Optimistic concurrency: every rotation/revocation increments it, and EF adds it to
+        // each UPDATE's WHERE clause, so a stale write affects 0 rows and fails.
+        builder.Property(s => s.RotationVersion).IsRequired().IsConcurrencyToken();
         builder.Property(s => s.AccessTokenJti).HasMaxLength(100).IsRequired();
         builder.Property(s => s.DeviceInfo).HasMaxLength(500);
         builder.Property(s => s.IpAddress).HasMaxLength(100);
@@ -112,7 +116,7 @@ public class UserSessionConfiguration : IEntityTypeConfiguration<UserSession>
         builder.Property(s => s.RefreshTokenExpiry).IsRequired();
         builder.Property(s => s.ExpiresAt).IsRequired();
 
-        builder.HasIndex(s => s.RefreshToken).IsUnique();
+        builder.HasIndex(s => s.RefreshTokenHash).IsUnique();
         builder.HasIndex(s => s.AccessTokenJti);
         builder.HasIndex(s => s.UserId);
 
@@ -125,6 +129,36 @@ public class UserSessionConfiguration : IEntityTypeConfiguration<UserSession>
             .WithMany(t => t.Sessions)
             .HasForeignKey(s => s.TenantId)
             .OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+// ── ConsumedRefreshTokens (R2-DEV-03A) ──────────────────────────────────────
+
+public class ConsumedRefreshTokenConfiguration : IEntityTypeConfiguration<ConsumedRefreshToken>
+{
+    public void Configure(EntityTypeBuilder<ConsumedRefreshToken> builder)
+    {
+        builder.ToTable("ConsumedRefreshTokens");
+
+        builder.HasKey(c => c.Id);
+        builder.Property(c => c.Id).ValueGeneratedNever();
+
+        builder.Property(c => c.TokenHash).HasMaxLength(64).IsRequired();
+        builder.Property(c => c.AccessTokenJti).HasMaxLength(100).IsRequired();
+        builder.Property(c => c.RotationVersion).IsRequired();
+        builder.Property(c => c.ConsumedAt).IsRequired();
+        builder.Property(c => c.RetainUntil).IsRequired();
+
+        // Replay lookup is by digest; the unique index is also a second line of defence: a
+        // token can be recorded as consumed only once.
+        builder.HasIndex(c => c.TokenHash).IsUnique();
+        builder.HasIndex(c => c.SessionId);
+        builder.HasIndex(c => c.RetainUntil); // bounded purge scans
+
+        builder.HasOne(c => c.Session)
+            .WithMany(s => s.ConsumedTokens)
+            .HasForeignKey(c => c.SessionId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
 }
 
