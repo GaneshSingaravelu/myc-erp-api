@@ -63,6 +63,15 @@ public static class IdentityServiceExtensions
 
         services.Configure<JwtSettings>(configuration.GetSection(JwtSettings.SectionName));
 
+        // ── Startup guard (R2-DEV-03A): refresh-token digest key ──
+        // Refresh tokens are stored only as HMAC-SHA-256 digests under this key. It must be
+        // provisioned (never generated at runtime) and identical on every instance; a missing,
+        // placeholder or short key stops startup rather than producing unverifiable digests.
+        var refreshTokenSettings = configuration.GetSection(RefreshTokenSettings.SectionName).Get<RefreshTokenSettings>();
+        RefreshTokenSettings.Validate(refreshTokenSettings);
+        services.Configure<RefreshTokenSettings>(configuration.GetSection(RefreshTokenSettings.SectionName));
+        services.AddSingleton<IRefreshTokenHasher, RefreshTokenHasher>();
+
         // Register Identity entity configurations with MasterDbContext
         // Without this, EF Core won't discover table mappings for Users, Roles, Permissions, etc.
         MasterDbContext.ConfigurationAssemblies.Add(typeof(IdentityServiceExtensions).Assembly);
@@ -144,7 +153,12 @@ public static class IdentityServiceExtensions
                 // Validates the token's JTI against active sessions in the database.
                 // Without this, logout/revoke only invalidates refresh tokens —
                 // already-issued access tokens remain valid until natural expiry.
-                // Uses short-TTL cache (2 min) to avoid DB hit on every request.
+                //
+                // R2-DEV-03A: read FRESH on every request (no per-instance cache). The former
+                // 2-minute positive cache could only be invalidated on the instance that revoked
+                // the session, so other instances kept accepting a revoked token for up to two
+                // minutes. Cost: one indexed lookup (UserSessions.AccessTokenJti) per
+                // authenticated request.
                 OnTokenValidated = async context =>
                 {
                     var jti = context.Principal?.FindFirst(JwtRegisteredClaimNames.Jti)?.Value;
@@ -156,32 +170,9 @@ public static class IdentityServiceExtensions
                         return;
                     }
 
-                    var cache = context.HttpContext.RequestServices.GetRequiredService<IMemoryCache>();
-                    var cacheKey = $"jti_valid:{jti}";
-
-                    // Check cache first — avoid DB roundtrip on every request
-                    if (cache.TryGetValue(cacheKey, out bool isValid))
-                    {
-                        if (!isValid)
-                        {
-                            context.Fail("Token has been revoked.");
-                        }
-                        return;
-                    }
-
-                    // Cache miss — check session in database
-                    var dbContext = context.HttpContext.RequestServices.GetRequiredService<MasterDbContext>();
-                    var now = DateTime.UtcNow;
-
-                    var sessionExists = await dbContext.Set<UserSession>()
-                        .AnyAsync(s => s.UserId == userId
-                            && s.AccessTokenJti == jti
-                            && !s.IsRevoked
-                            && s.ExpiresAt > now);
-
-                    // Cache result for 2 minutes — balances security vs performance
-                    // On revocation, the max window of continued access is 2 minutes
-                    cache.Set(cacheKey, sessionExists, TimeSpan.FromMinutes(2));
+                    var sessions = context.HttpContext.RequestServices.GetRequiredService<IUserSessionRepository>();
+                    var sessionExists = await sessions.IsAccessTokenSessionActiveAsync(
+                        userId, jti, DateTime.UtcNow, context.HttpContext.RequestAborted);
 
                     if (!sessionExists)
                     {

@@ -9,7 +9,6 @@ using ERP.Identity.Abstractions.Persistence;
 using ERP.Identity.Configuration;
 using ERP.Identity.Entities;
 using ERP.SharedKernel.Results;
-using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -33,6 +32,21 @@ namespace ERP.Identity.Services;
 /// - Token rotation: each refresh generates a new refresh token (old one is invalidated)
 /// - Multi-device: each login creates a separate session
 ///
+/// R2-DEV-03A — VERSIONED DEVICE SESSIONS:
+/// - Refresh tokens are stored and looked up only as keyed HMAC-SHA-256 digests.
+/// - Each UserSession is a device session FAMILY; RotationVersion is an optimistic-concurrency
+///   token incremented by every rotation AND every revocation. A concurrent stale write fails
+///   (DbUpdateConcurrencyException) instead of overwriting a newer state.
+/// - Rotation updates the session and inserts the consumed-token record in ONE SaveChanges
+///   (one transaction). New tokens are returned only after that commit succeeds.
+/// - Revocations re-read and re-apply on a conflict, so a revocation always wins against a
+///   concurrent refresh, and a refresh can never restore a revoked session.
+/// - A consumed token presented with its paired access token is a DUPLICATE within
+///   RefreshTokenSettings.DuplicateWindowSeconds (rejected, nothing revoked) and REUSE after it
+///   (that one session family is revoked). Anything else is simply rejected.
+/// - Access tokens are validated against the database on every request (no JTI cache), so a
+///   revocation on one instance is effective on all instances immediately.
+///
 /// PERSISTENCE BOUNDARY:
 /// ======================
 /// AuthService talks to the database ONLY through the repository abstractions
@@ -48,17 +62,18 @@ public class AuthService : IAuthService
     private readonly ITenantRepository _tenants;
     private readonly IMasterUnitOfWork _unitOfWork;
     private readonly ITokenService _tokenService;
-    private readonly IMemoryCache _cache;
+    private readonly IRefreshTokenHasher _refreshTokenHasher;
     private readonly IEmailService _emailService;
     private readonly JwtSettings _jwtSettings;
+    private readonly RefreshTokenSettings _refreshTokenSettings;
     private readonly ILogger<AuthService> _logger;
 
     private const int MaxFailedAttempts = 5;
     private const int LockoutMinutes = 15;
     private const int PasswordHistoryCount = 5;
 
-    /// <summary>Cache key prefix — must match the key used in OnTokenValidated (IdentityServiceExtensions)</summary>
-    private const string JtiCacheKeyPrefix = "jti_valid:";
+    /// <summary>Attempts to apply a revocation when concurrent session writes keep conflicting.</summary>
+    private const int MaxRevocationAttempts = 5;
 
     public AuthService(
         IUserRepository users,
@@ -67,9 +82,10 @@ public class AuthService : IAuthService
         ITenantRepository tenants,
         IMasterUnitOfWork unitOfWork,
         ITokenService tokenService,
-        IMemoryCache cache,
+        IRefreshTokenHasher refreshTokenHasher,
         IEmailService emailService,
         IOptions<JwtSettings> jwtSettings,
+        IOptions<RefreshTokenSettings> refreshTokenSettings,
         ILogger<AuthService> logger)
     {
         _users = users;
@@ -78,9 +94,10 @@ public class AuthService : IAuthService
         _tenants = tenants;
         _unitOfWork = unitOfWork;
         _tokenService = tokenService;
-        _cache = cache;
+        _refreshTokenHasher = refreshTokenHasher;
         _emailService = emailService;
         _jwtSettings = jwtSettings.Value;
+        _refreshTokenSettings = refreshTokenSettings.Value;
         _logger = logger;
     }
 
@@ -214,7 +231,8 @@ public class AuthService : IAuthService
         {
             UserId = user.Id,
             TenantId = resolvedTenant.Id,
-            RefreshToken = refreshToken,
+            RefreshTokenHash = _refreshTokenHasher.Hash(refreshToken), // digest only, never plaintext
+            RotationVersion = 0,
             RefreshTokenExpiry = DateTime.UtcNow.AddDays(_jwtSettings.RefreshTokenExpirationDays),
             AccessTokenJti = jti,
             ExpiresAt = DateTime.UtcNow.AddDays(_jwtSettings.RefreshTokenExpirationDays),
@@ -293,10 +311,17 @@ public class AuthService : IAuthService
         // 3. Refresh token not expired
         // 4. Absolute session expiry not exceeded (prevents indefinite refresh)
         var now = DateTime.UtcNow;
-        var session = await _sessions.FindActiveByRefreshTokenAsync(userId, request.RefreshToken, now);
+        var accessTokenJti = principal.FindFirst(JwtRegisteredClaimNames.Jti)?.Value;
+
+        if (string.IsNullOrEmpty(request.RefreshToken))
+            return InvalidRefreshToken();
+
+        // R2-DEV-03A: look the token up by its keyed digest; plaintext is never stored.
+        var presentedHash = _refreshTokenHasher.Hash(request.RefreshToken);
+        var session = await _sessions.FindActiveByRefreshTokenHashAsync(userId, presentedHash, now);
 
         if (session is null)
-            return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidRefreshToken", "Invalid or expired refresh token."));
+            return await RejectUnmatchedRefreshTokenAsync(userId, accessTokenJti, presentedHash, now);
 
         // SECURITY: Bind the access token's jti to this session's AccessTokenJti.
         // Without this, an attacker holding access token A from session-1 and refresh
@@ -310,14 +335,9 @@ public class AuthService : IAuthService
         // JwtSecurityTokenHandler.DefaultInboundClaimTypeMap. The integration test
         // Refresh_WithRealJwtRoundTrip_FindsJtiClaim asserts the round-trip works
         // against the real handler, not just hand-built principals.
-        var accessTokenJti = principal.FindFirst(JwtRegisteredClaimNames.Jti)?.Value;
         if (string.IsNullOrEmpty(accessTokenJti) || accessTokenJti != session.AccessTokenJti)
         {
-            session.IsRevoked = true;
-            session.RevokedAt = now;
-            session.RevokedReason = "JtiMismatch";
-            await _unitOfWork.SaveChangesAsync();
-            InvalidateJtiCache(session.AccessTokenJti);
+            await RevokeSessionAsync(session, "JtiMismatch", now);
 
             _logger.LogWarning(
                 "Refresh rejected for user {UserId}: access-token jti '{TokenJti}' does not match session jti '{SessionJti}'",
@@ -330,11 +350,7 @@ public class AuthService : IAuthService
         var resolvedRequestedTenantId = await ResolveTenantIdAsync(tenantId);
         if (resolvedRequestedTenantId is null || session.TenantId != resolvedRequestedTenantId.Value)
         {
-            session.IsRevoked = true;
-            session.RevokedAt = now;
-            session.RevokedReason = "TenantMismatch";
-            await _unitOfWork.SaveChangesAsync();
-            InvalidateJtiCache(session.AccessTokenJti);
+            await RevokeSessionAsync(session, "TenantMismatch", now);
 
             _logger.LogWarning("Refresh rejected for user {UserId}: tenant mismatch (session={SessionTenant}, requested={RequestedTenant})",
                 userId, session.TenantId, tenantId);
@@ -348,11 +364,7 @@ public class AuthService : IAuthService
             var tokenTenantId = await ResolveTenantIdAsync(tokenTenantClaim);
             if (tokenTenantId is null || tokenTenantId.Value != session.TenantId)
             {
-                session.IsRevoked = true;
-                session.RevokedAt = now;
-                session.RevokedReason = "TokenTenantMismatch";
-                await _unitOfWork.SaveChangesAsync();
-                InvalidateJtiCache(session.AccessTokenJti);
+                await RevokeSessionAsync(session, "TokenTenantMismatch", now);
 
                 _logger.LogWarning("Refresh rejected for user {UserId}: token tenant_id claim doesn't match session", userId);
                 return Result.Failure<LoginResponse>(Error.Validation("Auth.TenantMismatch", "Token tenant does not match session tenant."));
@@ -369,11 +381,7 @@ public class AuthService : IAuthService
         var sessionTenant = await _tenants.GetByIdAsync(session.TenantId);
         if (sessionTenant is null || !sessionTenant.IsActive)
         {
-            session.IsRevoked = true;
-            session.RevokedAt = now;
-            session.RevokedReason = "TenantInactive";
-            await _unitOfWork.SaveChangesAsync();
-            InvalidateJtiCache(session.AccessTokenJti);
+            await RevokeSessionAsync(session, "TenantInactive", now);
 
             _logger.LogWarning("Refresh rejected for user {UserId}: tenant {TenantId} is missing or inactive", userId, session.TenantId);
             return Result.Failure<LoginResponse>(Error.Validation("Auth.TenantInactive", "Tenant account is inactive. Contact administrator."));
@@ -384,11 +392,7 @@ public class AuthService : IAuthService
 
         if (user is null || !user.IsActive)
         {
-            session.IsRevoked = true;
-            session.RevokedAt = now;
-            session.RevokedReason = "UserInactive";
-            await _unitOfWork.SaveChangesAsync();
-            InvalidateJtiCache(session.AccessTokenJti);
+            await RevokeSessionAsync(session, "UserInactive", now);
             return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidRefreshToken", "User not found or inactive."));
         }
 
@@ -396,11 +400,7 @@ public class AuthService : IAuthService
         var securityStampClaim = principal.FindFirst("security_stamp")?.Value;
         if (securityStampClaim is not null && securityStampClaim != user.SecurityStamp)
         {
-            session.IsRevoked = true;
-            session.RevokedAt = now;
-            session.RevokedReason = "SecurityStampChanged";
-            await _unitOfWork.SaveChangesAsync();
-            InvalidateJtiCache(session.AccessTokenJti);
+            await RevokeSessionAsync(session, "SecurityStampChanged", now);
 
             _logger.LogWarning("Refresh rejected for user '{UserName}': SecurityStamp mismatch", user.UserName);
             return Result.Failure<LoginResponse>(Error.Validation("Auth.SecurityStampChanged", "Security credentials have changed. Please log in again."));
@@ -411,11 +411,7 @@ public class AuthService : IAuthService
         // session for that tenant until its absolute expiry. Generic error, as at login.
         if (!await _users.IsAssignedToTenantAsync(user.Id, session.TenantId))
         {
-            session.IsRevoked = true;
-            session.RevokedAt = now;
-            session.RevokedReason = "TenantMembershipRevoked";
-            await _unitOfWork.SaveChangesAsync();
-            InvalidateJtiCache(session.AccessTokenJti);
+            await RevokeSessionAsync(session, "TenantMembershipRevoked", now);
 
             _logger.LogWarning("Refresh rejected for user {UserId}: no active membership in tenant {TenantId}", userId, session.TenantId);
             return Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidRefreshToken", "Invalid or expired refresh token."));
@@ -434,18 +430,58 @@ public class AuthService : IAuthService
         var newAccessToken = _tokenService.GenerateAccessToken(user, roles, permissions, tenantCode, newJti);
         var newRefreshToken = _tokenService.GenerateRefreshToken();
 
-        // Invalidate old JTI before rotating — the old access token should be rejected immediately
-        var oldJti = session.AccessTokenJti;
+        // R2-DEV-03A — ATOMIC ROTATION.
+        // The consumed-token record and the session update are committed by ONE SaveChanges
+        // (one transaction). The session UPDATE carries "AND RotationVersion = @consumedVersion"
+        // (concurrency token), so when two requests race on the same token exactly one UPDATE
+        // matches; the loser gets a concurrency conflict, its transaction (history insert
+        // included) rolls back, and it overwrites nothing. The unique TokenHash index on the
+        // history table is a second guard against recording one token twice.
+        var consumedVersion = session.RotationVersion;
+        await _sessions.AddConsumedAsync(new ConsumedRefreshToken
+        {
+            SessionId = session.Id,
+            UserId = session.UserId,
+            TokenHash = presentedHash,
+            AccessTokenJti = session.AccessTokenJti, // the pair being consumed
+            RotationVersion = consumedVersion,
+            ConsumedAt = now,
+            RetainUntil = session.ExpiresAt, // live sessions never lose their history
+        });
 
-        // Update session with new tokens (refresh token expiry extends, but absolute ExpiresAt does NOT)
-        session.RefreshToken = newRefreshToken;
+        // Update session with new tokens (refresh token expiry extends, but absolute ExpiresAt does NOT).
+        // The old access token is rejected immediately: OnTokenValidated reads AccessTokenJti fresh.
+        session.RefreshTokenHash = _refreshTokenHasher.Hash(newRefreshToken);
         session.RefreshTokenExpiry = now.AddDays(_jwtSettings.RefreshTokenExpirationDays);
         session.AccessTokenJti = newJti;
         session.LastAccessedAt = now;
+        session.RotationVersion = consumedVersion + 1;
 
-        await _unitOfWork.SaveChangesAsync();
-        InvalidateJtiCache(oldJti);
+        try
+        {
+            await _unitOfWork.SaveChangesAsync();
+        }
+        catch (Exception ex) when (IsConcurrencyConflict(ex))
+        {
+            // Lost the race (another refresh rotated it, or a revocation landed first). Nothing
+            // was written; no credentials are issued.
+            _logger.LogWarning(
+                "Refresh for user {UserId} lost a concurrent update on session {SessionId} (version {Version}); no tokens issued",
+                userId, session.Id, consumedVersion);
+            return InvalidRefreshToken();
+        }
+        catch (Exception ex) when (IsExpectedDatabaseFailure(ex))
+        {
+            // Commit outcome UNKNOWN: the rotation may or may not have been applied. The new
+            // pair is discarded and never returned; the request is not retried. If it did commit,
+            // a resend of the old pair is a duplicate inside the window and reuse after it.
+            _logger.LogError(ex,
+                "Refresh for user {UserId} on session {SessionId}: rotation not confirmed (commit outcome unknown); no tokens issued",
+                userId, session.Id);
+            return InvalidRefreshToken();
+        }
 
+        // Only reached after a confirmed commit.
         return Result.Success(new LoginResponse(
             AccessToken: newAccessToken,
             RefreshToken: newRefreshToken,
@@ -455,20 +491,17 @@ public class AuthService : IAuthService
 
     public async Task<Result> LogoutAsync(Guid userId, string refreshToken)
     {
-        var session = await _sessions.FindNonRevokedByRefreshTokenAsync(userId, refreshToken);
+        if (string.IsNullOrEmpty(refreshToken))
+            return Result.Success(); // nothing to revoke — idempotent
+
+        var session = await _sessions.FindNonRevokedByRefreshTokenHashAsync(userId, _refreshTokenHasher.Hash(refreshToken));
 
         if (session is null)
             return Result.Success(); // Already logged out or invalid — idempotent
 
-        session.IsRevoked = true;
-        session.RevokedAt = DateTime.UtcNow;
-        session.RevokedReason = "Logout";
-
-        await _unitOfWork.SaveChangesAsync();
-
-        // Immediately invalidate the JTI cache so the access token is rejected on next request.
-        // Without this, the token would remain valid for up to the cache TTL (2 min).
-        InvalidateJtiCache(session.AccessTokenJti);
+        // Wins against a concurrent refresh (re-read + re-apply on conflict). The access token is
+        // rejected on the next request on every instance (OnTokenValidated reads the database).
+        await RevokeSessionAsync(session, "Logout", DateTime.UtcNow);
 
         _logger.LogInformation("Session revoked for user {UserId}", userId);
 
@@ -509,21 +542,10 @@ public class AuthService : IAuthService
         user.SecurityStamp = Guid.NewGuid().ToString();
         user.MustChangePassword = false;
 
-        // Revoke ALL active sessions (force re-login on all devices)
+        // Revoke ALL active sessions (force re-login on all devices). Saved together with the
+        // password change; a concurrent refresh cannot keep a session alive (see SaveRevokingSessionsAsync).
         var activeSessions = await _sessions.GetActiveSessionsForUserAsync(userId);
-
-        foreach (var session in activeSessions)
-        {
-            session.IsRevoked = true;
-            session.RevokedAt = DateTime.UtcNow;
-            session.RevokedReason = "PasswordChanged";
-        }
-
-        await _unitOfWork.SaveChangesAsync();
-
-        // Immediately invalidate all JTI cache entries so access tokens are rejected on next request
-        foreach (var session in activeSessions)
-            InvalidateJtiCache(session.AccessTokenJti);
+        await SaveRevokingSessionsAsync(activeSessions, "PasswordChanged", DateTime.UtcNow);
 
         _logger.LogInformation("Password changed for user {UserId}. {SessionCount} sessions revoked.", userId, activeSessions.Count);
         return Result.Success();
@@ -796,17 +818,7 @@ public class AuthService : IAuthService
 
         // Revoke all sessions — password changed outside of normal flow
         var activeSessions = await _sessions.GetActiveSessionsForUserAsync(user.Id);
-        foreach (var session in activeSessions)
-        {
-            session.IsRevoked = true;
-            session.RevokedAt = DateTime.UtcNow;
-            session.RevokedReason = "PasswordReset";
-        }
-
-        await _unitOfWork.SaveChangesAsync();
-
-        foreach (var session in activeSessions)
-            InvalidateJtiCache(session.AccessTokenJti);
+        await SaveRevokingSessionsAsync(activeSessions, "PasswordReset", DateTime.UtcNow);
 
         _logger.LogInformation("Password reset for user {UserId}. {SessionCount} sessions revoked.", user.Id, activeSessions.Count);
         return Result.Success();
@@ -853,17 +865,119 @@ public class AuthService : IAuthService
             : await _tenants.GetByCodeAsync(tenantId);
     }
 
+    private static Result<LoginResponse> InvalidRefreshToken() =>
+        Result.Failure<LoginResponse>(Error.Validation("Auth.InvalidRefreshToken", "Invalid or expired refresh token."));
+
     /// <summary>
-    /// Immediately removes a JTI from the validation cache so the corresponding access token
-    /// is rejected on the next request. Without this, revoked tokens would remain valid
-    /// for up to the cache TTL (2 minutes) — unacceptable for security-critical operations
-    /// like logout and password change.
-    ///
-    /// The cache key format must match OnTokenValidated in IdentityServiceExtensions.
+    /// R2-DEV-03A — the presented refresh token is not the CURRENT token of any live session of
+    /// this user. Classify it against consumed-token history:
+    /// <list type="bullet">
+    /// <item>Not in history, or in history for a different user, or presented with an access
+    /// token whose JTI is not the one it was paired with → plain rejection; NOTHING is revoked.
+    /// A known digest alone can therefore never be used to revoke someone's session.</item>
+    /// <item>Same signed pair within DuplicateWindowSeconds of its consumption → DUPLICATE
+    /// (e.g. a client retry after a lost response, or a second tab): rejected, nothing
+    /// revoked, no credentials issued.</item>
+    /// <item>Same signed pair after the window → REUSE: only that one session family
+    /// (UserSession.Id) is revoked. Other devices and tenants are untouched.</item>
+    /// </list>
+    /// The window cannot tell an attacker from a slow legitimate retry: a genuine retry that
+    /// arrives after it is treated as reuse. That is a policy trade-off, not proof of intent.
+    /// Every outcome returns the same generic error.
     /// </summary>
-    private void InvalidateJtiCache(string jti)
+    private async Task<Result<LoginResponse>> RejectUnmatchedRefreshTokenAsync(
+        Guid userId, string? accessTokenJti, string presentedHash, DateTime now)
     {
-        _cache.Remove($"{JtiCacheKeyPrefix}{jti}");
+        var consumed = await _sessions.FindConsumedByHashAsync(presentedHash);
+
+        if (consumed is null
+            || consumed.UserId != userId
+            || string.IsNullOrEmpty(accessTokenJti)
+            || !CryptographicOperations.FixedTimeEquals(
+                System.Text.Encoding.UTF8.GetBytes(consumed.AccessTokenJti),
+                System.Text.Encoding.UTF8.GetBytes(accessTokenJti)))
+        {
+            return InvalidRefreshToken();
+        }
+
+        var sinceConsumed = now - consumed.ConsumedAt;
+        if (sinceConsumed <= TimeSpan.FromSeconds(_refreshTokenSettings.DuplicateWindowSeconds))
+        {
+            _logger.LogWarning(
+                "Refresh for user {UserId}: duplicate of a token consumed {Seconds:F1}s ago on session {SessionId}; rejected, session not revoked",
+                userId, sinceConsumed.TotalSeconds, consumed.SessionId);
+            return InvalidRefreshToken();
+        }
+
+        var family = await _sessions.GetByIdAsync(consumed.SessionId);
+        if (family is not null && family.UserId == userId && !family.IsRevoked)
+        {
+            await RevokeSessionAsync(family, "RefreshTokenReuse", now);
+            _logger.LogWarning(
+                "Refresh for user {UserId}: REUSE of a token consumed {Seconds:F0}s ago (version {Version}); session family {SessionId} revoked",
+                userId, sinceConsumed.TotalSeconds, consumed.RotationVersion, consumed.SessionId);
+        }
+
+        return InvalidRefreshToken();
+    }
+
+    /// <summary>
+    /// Revokes one session so that the revocation ALWAYS wins. Bumping RotationVersion makes any
+    /// concurrent rotation of the same row fail; if this write itself conflicts (the row moved
+    /// on), the row is re-read and the revocation re-applied to its current state. Already
+    /// revoked → no-op (the original reason is kept).
+    /// </summary>
+    private async Task RevokeSessionAsync(UserSession session, string reason, DateTime now)
+        => await SaveRevokingSessionsAsync([session], reason, now);
+
+    /// <summary>
+    /// Marks every not-yet-revoked session in <paramref name="sessions"/> revoked (+1 version) and
+    /// saves ALL pending changes in the unit of work (e.g. a password change) in one SaveChanges.
+    /// On an optimistic-concurrency conflict the sessions are re-read and the revocation is
+    /// re-applied, up to <see cref="MaxRevocationAttempts"/> times; other pending changes are kept.
+    /// A refresh can therefore never restore a session this call revoked.
+    /// </summary>
+    private async Task SaveRevokingSessionsAsync(IReadOnlyCollection<UserSession> sessions, string reason, DateTime now)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            foreach (var session in sessions.Where(s => !s.IsRevoked))
+            {
+                session.IsRevoked = true;
+                session.RevokedAt = now;
+                session.RevokedReason = reason;
+                session.RotationVersion++;
+            }
+
+            try
+            {
+                await _unitOfWork.SaveChangesAsync();
+                return;
+            }
+            catch (Exception ex) when (IsConcurrencyConflict(ex) && attempt < MaxRevocationAttempts)
+            {
+                _logger.LogInformation(
+                    "Revocation ({Reason}) hit a concurrent session update; re-reading and re-applying (attempt {Attempt})",
+                    reason, attempt);
+                await _sessions.ReloadAsync(sessions);
+            }
+        }
+    }
+
+    /// <summary>
+    /// True for EF Core's optimistic-concurrency failure (an UPDATE/DELETE guarded by a
+    /// concurrency token affected no row). Matched by type name so this service keeps no EF
+    /// Core dependency (IdentityServices_Should_Not_Depend_On_EfCore architecture test).
+    /// </summary>
+    private static bool IsConcurrencyConflict(Exception ex)
+    {
+        for (Exception? e = ex; e is not null; e = e.InnerException)
+        {
+            if (e.GetType().FullName == "Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException")
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>

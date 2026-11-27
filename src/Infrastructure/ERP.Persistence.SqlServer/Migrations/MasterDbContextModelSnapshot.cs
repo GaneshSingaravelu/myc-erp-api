@@ -275,6 +275,48 @@ namespace ERP.Persistence.SqlServer.Migrations
                     b.ToTable("UserRoles", (string)null);
                 });
 
+            modelBuilder.Entity("ERP.Identity.Entities.ConsumedRefreshToken", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("AccessTokenJti")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime>("ConsumedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("RetainUntil")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("RotationVersion")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RetainUntil");
+
+                    b.HasIndex("SessionId");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique();
+
+                    b.ToTable("ConsumedRefreshTokens", (string)null);
+                });
+
             modelBuilder.Entity("ERP.Identity.Entities.FeatureFlag", b =>
                 {
                     b.Property<Guid>("Id")
@@ -635,13 +677,13 @@ namespace ERP.Persistence.SqlServer.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
-                    b.Property<string>("RefreshToken")
-                        .IsRequired()
-                        .HasMaxLength(500)
-                        .HasColumnType("nvarchar(500)");
-
                     b.Property<DateTime>("RefreshTokenExpiry")
                         .HasColumnType("datetime2");
+
+                    b.Property<string>("RefreshTokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
 
                     b.Property<DateTime?>("RevokedAt")
                         .HasColumnType("datetime2");
@@ -649,6 +691,10 @@ namespace ERP.Persistence.SqlServer.Migrations
                     b.Property<string>("RevokedReason")
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
+
+                    b.Property<int>("RotationVersion")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int");
 
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uniqueidentifier");
@@ -660,7 +706,7 @@ namespace ERP.Persistence.SqlServer.Migrations
 
                     b.HasIndex("AccessTokenJti");
 
-                    b.HasIndex("RefreshToken")
+                    b.HasIndex("RefreshTokenHash")
                         .IsUnique();
 
                     b.HasIndex("TenantId");
@@ -757,6 +803,17 @@ namespace ERP.Persistence.SqlServer.Migrations
                     b.Navigation("Tenant");
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("ERP.Identity.Entities.ConsumedRefreshToken", b =>
+                {
+                    b.HasOne("ERP.Identity.Entities.UserSession", "Session")
+                        .WithMany("ConsumedTokens")
+                        .HasForeignKey("SessionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Session");
                 });
 
             modelBuilder.Entity("ERP.Identity.Entities.Menu", b =>
@@ -917,6 +974,11 @@ namespace ERP.Persistence.SqlServer.Migrations
                     b.Navigation("UserRoles");
 
                     b.Navigation("UserTenants");
+                });
+
+            modelBuilder.Entity("ERP.Identity.Entities.UserSession", b =>
+                {
+                    b.Navigation("ConsumedTokens");
                 });
 #pragma warning restore 612, 618
         }

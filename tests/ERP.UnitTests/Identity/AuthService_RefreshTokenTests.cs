@@ -181,7 +181,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         Assert.Equal("TenantMismatch", updatedSession.RevokedReason);
 
         // JTI cache must be invalidated
-        CacheMock.Verify(c => c.Remove("jti_valid:test-jti"), Times.Once);
+        Assert.False(await IsJtiActiveAsync("test-jti")); // R2-DEV-03A: no JTI cache; the session check rejects it
     }
 
     [Fact]
@@ -285,7 +285,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         var updatedSession = await Context.Set<UserSession>().FindAsync(session.Id);
         Assert.True(updatedSession!.IsRevoked);
         Assert.Equal("SecurityStampChanged", updatedSession.RevokedReason);
-        CacheMock.Verify(c => c.Remove("jti_valid:test-jti"), Times.Once);
+        Assert.False(await IsJtiActiveAsync("test-jti")); // R2-DEV-03A: no JTI cache; the session check rejects it
     }
 
     [Fact]
@@ -330,9 +330,10 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
 
         // Session should have new tokens
         var updatedSession = await Context.Set<UserSession>().FindAsync(session.Id);
-        Assert.Equal("mock-refresh-token", updatedSession!.RefreshToken);
+        Assert.Equal(TestRefreshTokenHasher.Hash("mock-refresh-token"), updatedSession!.RefreshTokenHash); // digest, not plaintext
         Assert.NotEqual("old-jti", updatedSession.AccessTokenJti);
         Assert.NotNull(updatedSession.LastAccessedAt);
+        Assert.Equal(1, updatedSession.RotationVersion);
     }
 
     [Fact]
@@ -351,7 +352,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         await Sut.RefreshTokenAsync(request, tenant.Code);
 
         // Old JTI must be evicted from cache
-        CacheMock.Verify(c => c.Remove("jti_valid:old-jti-to-invalidate"), Times.Once);
+        Assert.False(await IsJtiActiveAsync("old-jti-to-invalidate")); // R2-DEV-03A: no JTI cache; the session check rejects it
     }
 
     [Fact]
@@ -424,7 +425,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         var updated = await Context.Set<UserSession>().FindAsync(session.Id);
         Assert.True(updated!.IsRevoked);
         Assert.Equal("JtiMismatch", updated.RevokedReason);
-        CacheMock.Verify(c => c.Remove("jti_valid:session-jti"), Times.Once);
+        Assert.False(await IsJtiActiveAsync("session-jti")); // R2-DEV-03A: no JTI cache; the session check rejects it
     }
 
     // ─── Real-JWT Round-Trip Integration (security review follow-up) ───
@@ -453,9 +454,10 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
             new TenantRepository(Context),
             new MasterUnitOfWork(Context),
             realTokenService,
-            CacheMock.Object,
+            TestRefreshTokenHasher,
             EmailServiceMock.Object,
             Options.Create(TestJwtSettings),
+            Options.Create(TestRefreshTokenSettings),
             NullLogger<AuthService>.Instance);
 
         var (user, tenant, role, permission) = await SeedUserWithRoleAsync();
@@ -490,7 +492,7 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         // and went through the full happy path, not some other code branch).
         var rotated = await Context.Set<UserSession>().FindAsync(session.Id);
         Assert.NotEqual(jti, rotated!.AccessTokenJti);
-        Assert.NotEqual(refreshToken, rotated.RefreshToken);
+        Assert.NotEqual(TestRefreshTokenHasher.Hash(refreshToken), rotated.RefreshTokenHash);
         Assert.False(rotated.IsRevoked);
     }
 
@@ -519,6 +521,6 @@ public class AuthService_RefreshTokenTests : AuthServiceTestBase
         var updated = await Context.Set<UserSession>().FindAsync(session.Id);
         Assert.True(updated!.IsRevoked);
         Assert.Equal("JtiMismatch", updated.RevokedReason);
-        CacheMock.Verify(c => c.Remove("jti_valid:session2-jti"), Times.Once);
+        Assert.False(await IsJtiActiveAsync("session2-jti")); // R2-DEV-03A: no JTI cache; the session check rejects it
     }
 }

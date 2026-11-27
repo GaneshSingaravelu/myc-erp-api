@@ -203,7 +203,7 @@ public class AuthService_TenantStatusTests : AuthServiceTestBase
         var updated = await Context.Set<UserSession>().FindAsync(session.Id);
         Assert.True(updated!.IsRevoked);
         Assert.Equal("TenantInactive", updated.RevokedReason);
-        CacheMock.Verify(c => c.Remove("jti_valid:test-jti"), Times.Once);
+        Assert.False(await IsJtiActiveAsync("test-jti")); // R2-DEV-03A: no JTI cache; the session check rejects it
         TokenServiceMock.Verify(t => t.GenerateRefreshToken(), Times.Never);
     }
 
@@ -348,8 +348,8 @@ public class AuthService_TenantStatusTests : AuthServiceTestBase
             It.IsAny<IList<string>>(), It.IsAny<string>(), It.IsAny<string>())).Returns("access");
         var service = new AuthService(new UserRepository(ctx), new UserSessionRepository(ctx),
             new UserPasswordHistoryRepository(ctx), new TenantRepository(ctx), new MasterUnitOfWork(ctx),
-            tokens.Object, new Mock<IMemoryCache>().Object, new Mock<IEmailService>().Object,
-            Options.Create(TestJwtSettings), NullLogger<AuthService>.Instance);
+            tokens.Object, TestRefreshTokenHasher, new Mock<IEmailService>().Object,
+            Options.Create(TestJwtSettings), Options.Create(TestRefreshTokenSettings), NullLogger<AuthService>.Instance);
         return (service, ctx, tokens);
     }
 
@@ -368,7 +368,7 @@ public class AuthService_TenantStatusTests : AuthServiceTestBase
         await ctx.Set<UserTenant>().AddAsync(new UserTenant { UserId = user.Id, TenantId = tenant.Id, IsActive = true });
         var session = new UserSession
         {
-            UserId = user.Id, TenantId = tenant.Id, RefreshToken = "shared-refresh", AccessTokenJti = "shared-jti",
+            UserId = user.Id, TenantId = tenant.Id, RefreshTokenHash = TestRefreshTokenHasher.Hash("shared-refresh"), AccessTokenJti = "shared-jti",
             RefreshTokenExpiry = DateTime.UtcNow.AddDays(7), ExpiresAt = DateTime.UtcNow.AddDays(7), CreatedAt = DateTime.UtcNow
         };
         await ctx.Set<UserSession>().AddAsync(session);
@@ -377,8 +377,14 @@ public class AuthService_TenantStatusTests : AuthServiceTestBase
     }
 
     [Fact]
-    public async Task ConcurrentRefresh_SameRefreshToken_AtMostOnePairRemainsUsable()
+    public async Task ConcurrentRefresh_SameRefreshToken_ExactlyOneRotationWins_LoserOverwritesNothing()
     {
+        // R2-DEV-03A changed this contract. Before, the session had no concurrency token and the
+        // LAST writer won: both racers "succeeded" and the loser's pair silently died. Now the
+        // session UPDATE is guarded by RotationVersion, so the request that saves second fails
+        // and writes nothing — it can neither overwrite the winner nor mint a second pair.
+        // EF InMemory honours concurrency tokens; real SQL Server/PostgreSQL behaviour is covered
+        // by RealProvider_RefreshConcurrencyTests (not by this test).
         var db = Guid.NewGuid().ToString();
         var (a, ctxA, tokensA) = BuildIndependentService(db);
         var (b, ctxB, tokensB) = BuildIndependentService(db);
@@ -400,31 +406,35 @@ public class AuthService_TenantStatusTests : AuthServiceTestBase
 
         var resultA = await a.RefreshTokenAsync(new RefreshTokenRequest("x", "shared-refresh"), tenant.Code);
 
-        Assert.True(resultA.IsSuccess);
+        // B saved first and won; A lost the optimistic-concurrency check and got nothing.
         Assert.NotNull(resultB);
-        var stored = await ctxV.Set<UserSession>().AsNoTracking().SingleAsync(s => s.Id == sessionId);
-        var usable = new[] { resultA.Value.RefreshToken, resultB!.IsSuccess ? resultB.Value.RefreshToken : null }
-            .Count(rt => rt == stored.RefreshToken);
-        Assert.Equal(1, usable);
-        Assert.Single(await ctxV.Set<UserSession>().AsNoTracking().ToListAsync()); // no extra session minted
+        Assert.True(resultB!.IsSuccess);
+        Assert.True(resultA.IsFailure);
+        Assert.Equal("Auth.InvalidRefreshToken", resultA.Error.Code);
 
-        // The original token and the losing pair are both dead.
+        var stored = await ctxV.Set<UserSession>().AsNoTracking().SingleAsync(s => s.Id == sessionId);
+        Assert.Equal(TestRefreshTokenHasher.Hash("refresh-B"), stored.RefreshTokenHash); // winner's token intact
+        Assert.Equal(1, stored.RotationVersion);
+        Assert.False(stored.IsRevoked);
+        Assert.Single(await ctxV.Set<UserSession>().AsNoTracking().ToListAsync()); // no extra session minted
+        // NOT asserted here: that the loser's consumed-token insert was rolled back. EF InMemory
+        // has no transactions, so a SaveChanges that fails on one entry may already have applied
+        // another. Atomic commit/rollback of rotation + history is verified only against real
+        // SQL Server and PostgreSQL (RealProvider_RefreshConcurrencyTests).
+
+        // The original pair, re-sent immediately, is a DUPLICATE: rejected, family not revoked.
         verifyTokens.Setup(t => t.GetPrincipalFromExpiredToken(It.IsAny<string>())).Returns(principal);
         var replayOriginal = await verify.RefreshTokenAsync(new RefreshTokenRequest("x", "shared-refresh"), tenant.Code);
         Assert.True(replayOriginal.IsFailure);
         Assert.Equal("Auth.InvalidRefreshToken", replayOriginal.Error.Code);
 
-        // The losing request's refresh token was overwritten by A's save and must be dead.
-        Assert.True(resultB.IsSuccess); // B completed before A saved — it did receive a pair
-        Assert.NotEqual("refresh-B", stored.RefreshToken);
-        var replayLoser = await verify.RefreshTokenAsync(new RefreshTokenRequest("x", "refresh-B"), tenant.Code);
+        // The loser's token was never stored, so it is simply unknown.
+        var replayLoser = await verify.RefreshTokenAsync(new RefreshTokenRequest("x", "refresh-A"), tenant.Code);
         Assert.True(replayLoser.IsFailure);
-        Assert.Equal("Auth.InvalidRefreshToken", replayLoser.Error.Code);
 
-        // The winning pair is unaffected by the failed replays and still holds the session.
         var afterReplays = await ctxV.Set<UserSession>().AsNoTracking().SingleAsync(s => s.Id == sessionId);
         Assert.False(afterReplays.IsRevoked);
-        Assert.Equal("refresh-A", afterReplays.RefreshToken);
+        Assert.Equal(TestRefreshTokenHasher.Hash("refresh-B"), afterReplays.RefreshTokenHash);
 
         ctxA.Dispose(); ctxB.Dispose(); ctxV.Dispose();
     }
@@ -481,7 +491,7 @@ public class AuthService_TenantStatusTests : AuthServiceTestBase
         await Context.SaveChangesAsync();
         SetupPrincipal(user, tenant, session.AccessTokenJti);
 
-        var refresh = await Sut.RefreshTokenAsync(new RefreshTokenRequest("x", session.RefreshToken), tenant.Code);
+        var refresh = await Sut.RefreshTokenAsync(new RefreshTokenRequest("x", login.Value.RefreshToken), tenant.Code);
 
         Assert.True(refresh.IsFailure);
         Assert.Equal("Auth.TenantInactive", refresh.Error.Code);

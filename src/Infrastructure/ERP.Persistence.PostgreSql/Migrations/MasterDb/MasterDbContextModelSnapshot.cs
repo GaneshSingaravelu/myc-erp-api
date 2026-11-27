@@ -274,6 +274,48 @@ namespace ERP.Persistence.PostgreSql.Migrations.MasterDb
                     b.ToTable("UserRoles", (string)null);
                 });
 
+            modelBuilder.Entity("ERP.Identity.Entities.ConsumedRefreshToken", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("AccessTokenJti")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTime>("ConsumedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("RetainUntil")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("RotationVersion")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RetainUntil");
+
+                    b.HasIndex("SessionId");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique();
+
+                    b.ToTable("ConsumedRefreshTokens", (string)null);
+                });
+
             modelBuilder.Entity("ERP.Identity.Entities.FeatureFlag", b =>
                 {
                     b.Property<Guid>("Id")
@@ -634,13 +676,13 @@ namespace ERP.Persistence.PostgreSql.Migrations.MasterDb
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
 
-                    b.Property<string>("RefreshToken")
-                        .IsRequired()
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)");
-
                     b.Property<DateTime>("RefreshTokenExpiry")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("RefreshTokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
 
                     b.Property<DateTime?>("RevokedAt")
                         .HasColumnType("timestamp with time zone");
@@ -648,6 +690,10 @@ namespace ERP.Persistence.PostgreSql.Migrations.MasterDb
                     b.Property<string>("RevokedReason")
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
+
+                    b.Property<int>("RotationVersion")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer");
 
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid");
@@ -659,7 +705,7 @@ namespace ERP.Persistence.PostgreSql.Migrations.MasterDb
 
                     b.HasIndex("AccessTokenJti");
 
-                    b.HasIndex("RefreshToken")
+                    b.HasIndex("RefreshTokenHash")
                         .IsUnique();
 
                     b.HasIndex("TenantId");
@@ -756,6 +802,17 @@ namespace ERP.Persistence.PostgreSql.Migrations.MasterDb
                     b.Navigation("Tenant");
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("ERP.Identity.Entities.ConsumedRefreshToken", b =>
+                {
+                    b.HasOne("ERP.Identity.Entities.UserSession", "Session")
+                        .WithMany("ConsumedTokens")
+                        .HasForeignKey("SessionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Session");
                 });
 
             modelBuilder.Entity("ERP.Identity.Entities.Menu", b =>
@@ -916,6 +973,11 @@ namespace ERP.Persistence.PostgreSql.Migrations.MasterDb
                     b.Navigation("UserRoles");
 
                     b.Navigation("UserTenants");
+                });
+
+            modelBuilder.Entity("ERP.Identity.Entities.UserSession", b =>
+                {
+                    b.Navigation("ConsumedTokens");
                 });
 #pragma warning restore 612, 618
         }

@@ -38,24 +38,28 @@ public sealed record Expectations(ContextExpectations Master, ContextExpectation
 
     public static readonly Expectations Approved = new(
         Master: new ContextExpectations(
+            // R2-DEV-03A: + ConsumedRefreshTokens (8 columns: 3 Guid, 2 DateTime, 1 Int, 2 sized text;
+            // 3 indexes, 1 unique; 1 FK). UserSessions: RefreshToken(500) → RefreshTokenHash(64)
+            // (sized text, unchanged count) and + RotationVersion (Int); its unique index is renamed.
             Tables:
             [
+                "ConsumedRefreshTokens",
                 "FeatureFlags", "IdentityAuditLogs", "MenuPermissions", "Menus", "Modules",
                 "Permissions", "RolePermissions", "Roles", "TenantFeatureFlags", "Tenants",
                 "UserPasswordHistory", "UserRoles", "UserSessions", "UserTenants", "Users",
             ],
-            Columns: 140,
+            Columns: 149,
             ColumnCategories: new Dictionary<string, int>
             {
-                [Guid] = 42, [DateTime] = 26, [Bool] = 20, [Int] = 3, [UnboundedText] = 3, [SizedText] = 46, [Date] = 0,
+                [Guid] = 45, [DateTime] = 28, [Bool] = 20, [Int] = 5, [UnboundedText] = 3, [SizedText] = 48, [Date] = 0,
             },
-            Indexes: 33,
-            UniqueIndexes: 14,
+            Indexes: 36,
+            UniqueIndexes: 15,
             FilteredIndexesSqlServer: 1,
             FilteredIndexesPostgreSql: 0,
-            ForeignKeys: 17,
-            SqlServerLineage: ["20260407122318_InitialMaster", "20260509162834_AddPasswordResetToken"],
-            PostgreSqlLineage: ["20261007022731_InitialMasterBaseline"]),
+            ForeignKeys: 18,
+            SqlServerLineage: ["20260407122318_InitialMaster", "20260509162834_AddPasswordResetToken", "20261127152005_AddVersionedDeviceSessions"],
+            PostgreSqlLineage: ["20261007022731_InitialMasterBaseline", "20261127152024_AddVersionedDeviceSessions"]),
         AppDb: new ContextExpectations(
             Tables:
             [

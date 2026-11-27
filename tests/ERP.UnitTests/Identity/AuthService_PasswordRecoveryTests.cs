@@ -298,8 +298,8 @@ public class AuthService_PasswordRecoveryTests : AuthServiceTestBase
         ITenantRepository? tenants = null, IMasterUnitOfWork? unitOfWork = null, ILogger<AuthService>? logger = null) => new(
         new UserRepository(Context), new UserSessionRepository(Context), new UserPasswordHistoryRepository(Context),
         tenants ?? new TenantRepository(Context), unitOfWork ?? new MasterUnitOfWork(Context),
-        TokenServiceMock.Object, CacheMock.Object, EmailServiceMock.Object,
-        Options.Create(TestJwtSettings), logger ?? NullLogger<AuthService>.Instance);
+        TokenServiceMock.Object, TestRefreshTokenHasher, EmailServiceMock.Object,
+        Options.Create(TestJwtSettings), Options.Create(TestRefreshTokenSettings),logger ?? NullLogger<AuthService>.Instance);
 
     /// <summary>A provider-level failure as ADO.NET reports it (SqlException/NpgsqlException derive from DbException).</summary>
     private sealed class SimulatedDbException(string message) : System.Data.Common.DbException(message);
@@ -529,8 +529,8 @@ public class AuthService_PasswordRecoveryTests : AuthServiceTestBase
         Assert.All(sessions, s => { Assert.True(s.IsRevoked); Assert.Equal("PasswordReset", s.RevokedReason); });
         Assert.NotEqual(stampBefore, (await ReloadUserAsync(user.Id)).SecurityStamp);
         Assert.Single(await Context.Set<UserPasswordHistory>().AsNoTracking().Where(h => h.UserId == user.Id).ToListAsync());
-        CacheMock.Verify(c => c.Remove("jti_valid:jti-1"), Times.Once);
-        CacheMock.Verify(c => c.Remove("jti_valid:jti-2"), Times.Once);
+        Assert.False(await IsJtiActiveAsync("jti-1")); // R2-DEV-03A: no JTI cache; the session check rejects it
+        Assert.False(await IsJtiActiveAsync("jti-2")); // R2-DEV-03A: no JTI cache; the session check rejects it
     }
 
     [Fact]
@@ -745,8 +745,8 @@ public class AuthService_PasswordRecoveryTests : AuthServiceTestBase
         users.Setup(u => u.IsAssignedToTenantAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(failure);
         var service = new AuthService(users.Object, new UserSessionRepository(Context), new UserPasswordHistoryRepository(Context),
-            new TenantRepository(Context), new MasterUnitOfWork(Context), TokenServiceMock.Object, CacheMock.Object,
-            EmailServiceMock.Object, Options.Create(TestJwtSettings), NullLogger<AuthService>.Instance);
+            new TenantRepository(Context), new MasterUnitOfWork(Context), TokenServiceMock.Object, TestRefreshTokenHasher,
+            EmailServiceMock.Object, Options.Create(TestJwtSettings), Options.Create(TestRefreshTokenSettings),NullLogger<AuthService>.Instance);
 
         var result = await service.ForgotPasswordAsync(new ForgotPasswordRequest(Email), tenant.Code, exposeToken: true);
 
@@ -801,8 +801,8 @@ public class AuthService_PasswordRecoveryTests : AuthServiceTestBase
         users.Setup(u => u.IsAssignedToTenantAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(RealSqlClientInvalidOperation());
         var service = new AuthService(users.Object, new UserSessionRepository(Context), new UserPasswordHistoryRepository(Context),
-            new TenantRepository(Context), new MasterUnitOfWork(Context), TokenServiceMock.Object, CacheMock.Object,
-            EmailServiceMock.Object, Options.Create(TestJwtSettings), NullLogger<AuthService>.Instance);
+            new TenantRepository(Context), new MasterUnitOfWork(Context), TokenServiceMock.Object, TestRefreshTokenHasher,
+            EmailServiceMock.Object, Options.Create(TestJwtSettings), Options.Create(TestRefreshTokenSettings),NullLogger<AuthService>.Instance);
 
         var result = await service.ForgotPasswordAsync(new ForgotPasswordRequest(Email), tenant.Code, exposeToken: true);
 
@@ -898,8 +898,8 @@ public class AuthService_PasswordRecoveryTests : AuthServiceTestBase
         await ctx.SaveChangesAsync();
 
         var service = new AuthService(new UserRepository(ctx), new UserSessionRepository(ctx), new UserPasswordHistoryRepository(ctx),
-            new TenantRepository(ctx), new MasterUnitOfWork(ctx), TokenServiceMock.Object, CacheMock.Object,
-            EmailServiceMock.Object, Options.Create(TestJwtSettings), NullLogger<AuthService>.Instance);
+            new TenantRepository(ctx), new MasterUnitOfWork(ctx), TokenServiceMock.Object, TestRefreshTokenHasher,
+            EmailServiceMock.Object, Options.Create(TestJwtSettings), Options.Create(TestRefreshTokenSettings),NullLogger<AuthService>.Instance);
 
         var earlier = (await service.ForgotPasswordAsync(new ForgotPasswordRequest(Email), tenant.Code, exposeToken: true)).Value.ResetToken;
         Assert.NotNull(earlier);

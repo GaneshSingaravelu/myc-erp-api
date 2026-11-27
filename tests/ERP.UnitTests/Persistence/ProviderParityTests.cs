@@ -71,6 +71,7 @@ public class ProviderParityTests
 
     private static readonly string[] MasterTables =
     [
+        "ConsumedRefreshTokens", // R2-DEV-03A
         "FeatureFlags", "IdentityAuditLogs", "MenuPermissions", "Menus", "Modules",
         "Permissions", "RolePermissions", "Roles", "TenantFeatureFlags", "Tenants",
         "UserPasswordHistory", "UserRoles", "UserSessions", "UserTenants", "Users",
@@ -84,6 +85,8 @@ public class ProviderParityTests
 
     private static readonly string[] MasterDateTimeColumns =
     [
+        "ConsumedRefreshTokens.ConsumedAt", // R2-DEV-03A
+        "ConsumedRefreshTokens.RetainUntil", // R2-DEV-03A
         "FeatureFlags.CreatedAt",
         "IdentityAuditLogs.CreatedAt",
         "Menus.CreatedAt",
@@ -138,6 +141,7 @@ public class ProviderParityTests
     // nvarchar(n) ↔ character varying(n): the complete sized-string inventory with lengths.
     private static readonly Dictionary<string, int> MasterSizedStringColumns = new()
     {
+        ["ConsumedRefreshTokens.AccessTokenJti"] = 100, ["ConsumedRefreshTokens.TokenHash"] = 64, // R2-DEV-03A
         ["FeatureFlags.Code"] = 100, ["FeatureFlags.Description"] = 500, ["FeatureFlags.Name"] = 200,
         ["IdentityAuditLogs.Action"] = 50, ["IdentityAuditLogs.EntityId"] = 100, ["IdentityAuditLogs.EntityType"] = 200,
         ["IdentityAuditLogs.IpAddress"] = 100, ["IdentityAuditLogs.UserAgent"] = 500,
@@ -153,7 +157,7 @@ public class ProviderParityTests
         ["Users.NormalizedUserName"] = 100, ["Users.PasswordHash"] = 500, ["Users.PhoneNumber"] = 20,
         ["Users.SecurityStamp"] = 100, ["Users.UserName"] = 100,
         ["UserSessions.AccessTokenJti"] = 100, ["UserSessions.DeviceInfo"] = 500, ["UserSessions.IpAddress"] = 100,
-        ["UserSessions.Location"] = 200, ["UserSessions.RefreshToken"] = 500, ["UserSessions.RevokedReason"] = 200,
+        ["UserSessions.Location"] = 200, ["UserSessions.RefreshTokenHash"] = 64, ["UserSessions.RevokedReason"] = 200, // R2-DEV-03A: digest replaces plaintext
     };
 
     private static readonly Dictionary<string, int> AppDbSizedStringColumns = new()
@@ -178,10 +182,11 @@ public class ProviderParityTests
 
     private static readonly string[] MasterUniqueIndexes =
     [
+        "IX_ConsumedRefreshTokens_TokenHash", // R2-DEV-03A
         "IX_FeatureFlags_Code", "IX_MenuPermissions_MenuId_PermissionId", "IX_Menus_Code", "IX_Modules_Code",
         "IX_Permissions_Code", "IX_RolePermissions_RoleId_PermissionId", "IX_Roles_NormalizedName_TenantId",
         "IX_TenantFeatureFlags_TenantId_FeatureFlagId", "IX_Tenants_Code", "IX_UserRoles_UserId_RoleId_TenantId",
-        "IX_UserSessions_RefreshToken", "IX_UserTenants_UserId_TenantId", "IX_Users_NormalizedEmail",
+        "IX_UserSessions_RefreshTokenHash", "IX_UserTenants_UserId_TenantId", "IX_Users_NormalizedEmail",
         "IX_Users_NormalizedUserName",
     ];
 
@@ -193,6 +198,7 @@ public class ProviderParityTests
 
     private static readonly string[] MasterForeignKeys =
     [
+        "FK_ConsumedRefreshTokens_UserSessions_SessionId:Cascade", // R2-DEV-03A
         "FK_MenuPermissions_Menus_MenuId:Cascade", "FK_MenuPermissions_Permissions_PermissionId:Cascade",
         "FK_Menus_Menus_ParentMenuId:Restrict", "FK_Menus_Modules_ModuleId:Cascade",
         "FK_RolePermissions_Permissions_PermissionId:Cascade", "FK_RolePermissions_Roles_RoleId:Cascade",
@@ -217,6 +223,7 @@ public class ProviderParityTests
     [
         "20260407122318_InitialMaster",
         "20260509162834_AddPasswordResetToken",
+        "20261127152005_AddVersionedDeviceSessions", // R2-DEV-03A
     ];
 
     private static readonly string[] SqlServerAppDbMigrations =
@@ -229,6 +236,7 @@ public class ProviderParityTests
     private static readonly string[] PostgreSqlMasterMigrations =
     [
         "20261007022731_InitialMasterBaseline",
+        "20261127152024_AddVersionedDeviceSessions", // R2-DEV-03A
     ];
 
     private static readonly string[] PostgreSqlAppDbMigrations =
@@ -330,7 +338,7 @@ public class ProviderParityTests
     public void O1_ClrTypeInventory_IsPinned(Ctx ctx, Provider provider)
     {
         var expected = ctx == Ctx.Master
-            ? new Dictionary<string, int> { ["Boolean"] = 20, ["DateTime"] = 26, ["Guid"] = 42, ["Int32"] = 3, ["String"] = 49 }
+            ? new Dictionary<string, int> { ["Boolean"] = 20, ["DateTime"] = 28, ["Guid"] = 45, ["Int32"] = 5, ["String"] = 51 } // R2-DEV-03A
             : new Dictionary<string, int>
             {
                 ["Boolean"] = 12, ["DateOnly"] = 1, ["DateTime"] = 19, ["Guid"] = 32, ["Int32"] = 5, ["String"] = 23,
@@ -375,10 +383,10 @@ public class ProviderParityTests
 
     // Approved per-pair counts, asserted independently on BOTH providers.
     [Theory]
-    [InlineData(Ctx.Master, "uniqueidentifier", "uuid", 42)]
-    [InlineData(Ctx.Master, "datetime2", "timestamp with time zone", 26)]
+    [InlineData(Ctx.Master, "uniqueidentifier", "uuid", 45)] // R2-DEV-03A +3
+    [InlineData(Ctx.Master, "datetime2", "timestamp with time zone", 28)] // R2-DEV-03A +2
     [InlineData(Ctx.Master, "bit", "boolean", 20)]
-    [InlineData(Ctx.Master, "int", "integer", 3)]
+    [InlineData(Ctx.Master, "int", "integer", 5)] // R2-DEV-03A +2 (RotationVersion x2)
     [InlineData(Ctx.Master, "nvarchar(max)", "text", 3)]
     [InlineData(Ctx.Master, "date", "date", 0)]
     [InlineData(Ctx.AppDb, "uniqueidentifier", "uuid", 32)]
@@ -429,7 +437,7 @@ public class ProviderParityTests
     // ── O-3: names and shapes — tables, columns, keys, indexes, foreign keys ─
 
     [Theory]
-    [InlineData(Ctx.Master, 15, 33, 17)]
+    [InlineData(Ctx.Master, 16, 36, 18)] // R2-DEV-03A: +1 table, +3 indexes, +1 FK
     [InlineData(Ctx.AppDb, 8, 23, 5)]
     public void O3_ObjectCounts_ArePinnedOnBothProviders(Ctx ctx, int tables, int indexes, int foreignKeys)
     {
@@ -509,7 +517,7 @@ public class ProviderParityTests
     }
 
     [Theory]
-    [InlineData(Ctx.Master, 13, 4)]
+    [InlineData(Ctx.Master, 14, 4)] // R2-DEV-03A: + cascade FK ConsumedRefreshTokens -> UserSessions
     [InlineData(Ctx.AppDb, 3, 2)]
     public void O3_DeleteBehaviourCounts_ArePinnedOnBothProviders(Ctx ctx, int cascade, int restrict)
     {
@@ -525,7 +533,7 @@ public class ProviderParityTests
     // ── O-4: unique-index parity ─────────────────────────────────────────────
 
     [Theory]
-    [InlineData(Ctx.Master, 14)]
+    [InlineData(Ctx.Master, 15)] // R2-DEV-03A: + IX_ConsumedRefreshTokens_TokenHash
     [InlineData(Ctx.AppDb, 6)]
     public void O4_UniqueIndexes_ArePinnedAndIdentical(Ctx ctx, int expectedCount)
     {
@@ -542,8 +550,8 @@ public class ProviderParityTests
     // ── O-5: UTC DateTime converters ─────────────────────────────────────────
 
     [Theory]
-    [InlineData(Ctx.Master, Provider.SqlServer, 26, "datetime2")]
-    [InlineData(Ctx.Master, Provider.PostgreSql, 26, "timestamp with time zone")]
+    [InlineData(Ctx.Master, Provider.SqlServer, 28, "datetime2")] // R2-DEV-03A +2
+    [InlineData(Ctx.Master, Provider.PostgreSql, 28, "timestamp with time zone")] // R2-DEV-03A +2
     [InlineData(Ctx.AppDb, Provider.SqlServer, 19, "datetime2")]
     [InlineData(Ctx.AppDb, Provider.PostgreSql, 19, "timestamp with time zone")]
     public void O5_EveryDateTime_HasTheUtcConverter_AndTheProviderStoreType(

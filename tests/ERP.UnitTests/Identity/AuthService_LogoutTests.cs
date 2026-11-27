@@ -31,8 +31,11 @@ public class AuthService_LogoutTests : AuthServiceTestBase
         var result = await Sut.LogoutAsync(user.Id, "my-refresh");
 
         Assert.True(result.IsSuccess);
-        // Cache.Remove should NOT be called — session was already revoked, query returns null
-        CacheMock.Verify(c => c.Remove(It.IsAny<string>()), Times.Never);
+        // Already revoked: nothing is written again — reason, time and version are unchanged.
+        var stored = await Context.Set<UserSession>().AsNoTracking().SingleAsync(s => s.Id == session.Id);
+        Assert.True(stored.IsRevoked);
+        Assert.Equal(session.RotationVersion, stored.RotationVersion);
+        Assert.Equal(session.RevokedReason, stored.RevokedReason);
     }
 
     [Fact]
@@ -54,7 +57,7 @@ public class AuthService_LogoutTests : AuthServiceTestBase
         Assert.Equal("Logout", updatedSession.RevokedReason);
 
         // JTI cache must be invalidated
-        CacheMock.Verify(c => c.Remove("jti_valid:active-jti"), Times.Once);
+        Assert.False(await IsJtiActiveAsync("active-jti")); // R2-DEV-03A: no JTI cache; the session check rejects it
     }
 
     [Fact]
